@@ -1,0 +1,65 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+  <!-- Microphone body -->
+  <path
+      android:pathData="M54,28c-4.4,0 -8,3.6 -8,8v18c0,4.4 3.6,8 8,8s8,-3.6 8,-8V36c0,-4.4 -3.6,-8 -8,-8z"
+      android:fillColor="#FFFFFF"/>
+
+  <!-- Microphone arc -->
+  <path
+      android:pathData="M38,50v4c0,8.8 7.2,16 16,16s16,-7.2 16,-16v-4"
+      android:strokeWidth="3"
+      android:strokeColor="#FFFFFF"
+      android:fillColor="#00000000"
+      android:strokeLineCap="round"/>
+
+  <!-- Microphone stand -->
+  <path
+      android:pathData="M54,70v8"
+      android:strokeWidth="3"
+      android:strokeColor="#FFFFFF"
+      android:strokeLineCap="round"/>
+
+  <!-- Microphone base -->
+  <path
+      android:pathData="M46,78h16"
+      android:strokeWidth="3"
+      android:strokeColor="#FFFFFF"
+      android:strokeLineCap="round"/>
+
+  <!-- Sound wave 1 (small) -->
+  <path
+      android:pathData="M72,40c2.5,2.5 4,6 4,10s-1.5,7.5 -4,10"
+      android:strokeWidth="2.5"
+      android:strokeColor="#BBFFFFFF"
+      android:fillColor="#00000000"
+      android:strokeLineCap="round"/>
+
+  <!-- Sound wave 2 (medium) -->
+  <path
+      android:pathData="M78,34c4,4 6.5,9.5 6.5,16s-2.5,12 -6.5,16"
+      android:strokeWidth="2.5"
+      android:strokeColor="#88FFFFFF"
+      android:fillColor="#00000000"
+      android:strokeLineCap="round"/>
+
+  <!-- Sound wave 1 left (small) -->
+  <path
+      android:pathData="M36,40c-2.5,2.5 -4,6 -4,10s1.5,7.5 4,10"
+      android:strokeWidth="2.5"
+      android:strokeColor="#BBFFFFFF"
+      android:fillColor="#00000000"
+      android:strokeLineCap="round"/>
+
+  <!-- Sound wave 2 left (medium) -->
+  <path
+      android:pathData="M30,34c-4,4 -6.5,9.5 -6.5,16s2.5,12 6.5,16"
+      android:strokeWidth="2.5"
+      android:strokeColor="#88FFFFFF"
+      android:fillColor="#00000000"
+      android:strokeLineCap="round"/>
+</vector>
