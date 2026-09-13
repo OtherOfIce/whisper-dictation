@@ -1,0 +1,161 @@
+const icons = {
+  wave: '<path d="M3 10v4m4-8v12m5-15v18m5-13v8m4-11v14"/>',
+  history: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 2h6v4H9zM8 11h8m-8 4h5"/>',
+  settings: '<path d="m9 3-1 3-3 1-2 3 2 2-1 3 3 2 3-1 2 2 3-1 1-3 3-1 1-3-2-2V5l-3-1-2 1z"/><circle cx="11.5" cy="10.5" r="3"/>',
+  search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/>',
+  copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 5V3H3v14h2"/>',
+  chart: '<path d="M4 3v17h17M8 15v-4m5 4V6m5 9v-6"/>',
+  trash: '<path d="M4 6h16M9 3h6m-9 3 1 15h10l1-15M10 10v7m4-7v7"/>',
+  refresh: '<path d="M20 10a8 8 0 0 0-14-4L3 9m0-6v6h6m-5 5a8 8 0 0 0 14 4l3-3m0 6v-6h-6"/>',
+  mic: '<rect x="9" y="2" width="6" height="13" rx="3"/><path d="M6 10v2a6 6 0 0 0 12 0v-2m-6 8v4m-3 0h6"/>',
+  arrow: '<path d="M4 12h16m-6-6 6 6-6 6"/>',
+  minus: '<path d="M4 12h16"/>', square: '<rect x="5" y="5" width="14" height="14" rx="1"/>',
+  x: '<path d="m6 6 12 12M18 6 6 18"/>', download: '<path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/>'
+};
+function icon(name) { const span = document.createElement('span'); span.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.wave}</svg>`; return span; }
+document.querySelectorAll('[data-icon]').forEach(node => node.replaceWith(icon(node.dataset.icon)));
+const $ = id => document.getElementById(id);
+const call = (method, params) => window.whisper.call(method, params);
+let history = [], selectedId = null, pageSize = 100, toastTimer, latestBalance;
+function renderWordStats(stats) {
+  if (!stats) return;
+  $('words-total').textContent = Number(stats.total || 0).toLocaleString();
+  $('words-today').textContent = Number(stats.today || 0).toLocaleString();
+  $('words-week').textContent = Number(stats.last7Days || 0).toLocaleString();
+}
+function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4500); }
+function navigate(view) {
+  $('history-view').hidden = view !== 'history'; $('settings-view').hidden = view !== 'settings';
+  document.querySelectorAll('[data-view]').forEach(button => button.classList.toggle('selected', button.dataset.view === view));
+  closeDrawer();
+}
+document.querySelectorAll('[data-view]').forEach(button => button.onclick = () => navigate(button.dataset.view));
+document.querySelectorAll('[data-window]').forEach(button => button.onclick = () => call(button.dataset.window).catch(error => toast(error.message)));
+function action(name, title, handler) {
+  const button = document.createElement('button'); button.title = title; button.setAttribute('aria-label', title); button.append(icon(name)); button.onclick = handler; return button;
+}
+function renderHistory() {
+  const query = $('search').value.toLocaleLowerCase();
+  const filtered = history.filter(entry => entry.text.toLocaleLowerCase().includes(query));
+  $('history-count').textContent = `${history.length.toLocaleString()} transcript${history.length === 1 ? '' : 's'}`;
+  const fragment = document.createDocumentFragment();
+  let day, group;
+  for (const entry of filtered.slice(0, pageSize)) {
+    const date = new Date(entry.metrics.started);
+    const label = date.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
+    if (day !== label) {
+      day = label; const heading = document.createElement('div'); heading.className = 'day-label'; heading.textContent = label; fragment.append(heading);
+      group = document.createElement('div'); group.className = 'transcript-group'; fragment.append(group);
+    }
+    const article = document.createElement('article'); article.className = 'transcript'; article.dataset.id = entry.id;
+    const time = document.createElement('time'); time.dateTime = date.toISOString(); time.textContent = date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    const text = document.createElement('div'); text.className = 'transcript-text'; text.textContent = entry.text || entry.metrics.outcome;
+    if (!entry.text) text.classList.add('empty');
+    const actions = document.createElement('div'); actions.className = 'transcript-actions';
+    const copy = action('copy', 'Copy transcript', () => call('copy', { id: entry.id }).then(() => toast('Transcript copied')).catch(error => toast(error.message)));
+    copy.disabled = !entry.text;
+    actions.append(copy, action('chart', 'Show performance', () => openPerformance(entry.id)), action('trash', 'Delete transcript', async () => {
+      try { await call('delete', { id: entry.id }); toast('Transcript deleted'); } catch (error) { toast(error.message); }
+    }));
+    article.append(time, text, actions); group.append(article);
+  }
+  if (!filtered.length) {
+    const empty = document.createElement('div'); empty.className = 'empty-state';
+    const symbol = document.createElement('div'); symbol.className = 'empty-icon'; symbol.append(icon(query ? 'search' : 'wave'));
+    const title = document.createElement('h2'); title.textContent = query ? 'No matching words.' : 'Start with a thought.';
+    const help = document.createElement('p'); help.textContent = query ? 'Try a different word or clear your search.' : 'Hold Ctrl + Win, say what’s on your mind, and release.\nYour transcript will appear here.';
+    empty.append(symbol, title, help); fragment.append(empty);
+  }
+  $('history-list').replaceChildren(fragment); $('load-more').hidden = filtered.length <= pageSize;
+}
+$('search').oninput = () => { pageSize = 100; renderHistory(); };
+$('load-more').onclick = () => { pageSize += 100; renderHistory(); };
+const money = (number, digits = 2) => number == null ? '—' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: digits, maximumFractionDigits: digits }).format(number);
+function renderBalance(balance) {
+  latestBalance = balance;
+  if (!balance) return;
+  const hasBalance = balance.remaining != null;
+  $('balance-label').textContent = balance.kind === 'account' ? 'Remaining credit' : balance.kind === 'key' ? 'Key allowance remaining' : 'Used by this API key';
+  $('balance-amount').textContent = money(hasBalance ? balance.remaining : balance.usage);
+  $('balance-detail').textContent = balance.message;
+  $('usage-total').textContent = money(balance.usage, 4); $('usage-today').textContent = money(balance.usageDaily, 4);
+  $('balance-updated').textContent = `Updated ${new Date(balance.updated).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+}
+$('refresh-balance').onclick = async () => {
+  $('refresh-balance').disabled = true;
+  try { const value = await call('refreshCredits'); if (value?.error) toast(value.error); else if (value) renderBalance(value); }
+  catch (error) { toast(error.message); }
+  finally { $('refresh-balance').disabled = false; }
+};
+function renderSettings(settings) {
+  $('key-status').textContent = settings.hasKey ? 'Saved securely' : 'Not connected';
+  $('live-chunks').checked = !!settings.liveChunks;
+  $('cleanup-mode').value = settings.cleanupMode || 'off';
+  $('balance-key').placeholder = settings.hasBalanceKey ? 'Saved securely. Leave blank to keep it.' : 'Optional management key';
+  $('dictionary-terms').value = Array.isArray(settings.dictionaryTerms) ? settings.dictionaryTerms.join('\n') : '';
+}
+$('settings-form').onsubmit = async event => {
+  event.preventDefault(); const button = event.submitter; button.disabled = true;
+  try {
+    const dictionaryTerms = $('dictionary-terms').value.split(/\r?\n/).map(term => term.trim()).filter(Boolean);
+    const settings = await call('saveSettings', { apiKey: $('api-key').value, balanceKey: $('balance-key').value, clearBalanceKey: $('clear-balance-key').checked, liveChunks: $('live-chunks').checked, cleanupMode: $('cleanup-mode').value, dictionaryTerms });
+    $('api-key').value = ''; $('balance-key').value = ''; $('clear-balance-key').checked = false;
+    renderSettings(settings); $('save-message').textContent = 'Settings saved';
+  } catch (error) { toast(error.message); } finally { button.disabled = false; }
+};
+async function openPerformance(id) {
+  selectedId = id; $('include-recording').checked = false;
+  const entry = history.find(item => item.id === id);
+  $('original-transcript').hidden = typeof entry?.rawText !== 'string' || entry.rawText === entry.text;
+  $('original-transcript').open = false;
+  $('original-text').textContent = entry?.rawText || '';
+  $('performance-drawer').hidden = false; $('drawer-backdrop').hidden = false;
+  await renderPerformance(); $('close-drawer').focus();
+}
+function closeDrawer() { selectedId = null; $('performance-drawer').hidden = true; $('drawer-backdrop').hidden = true; }
+$('close-drawer').onclick = closeDrawer; $('drawer-backdrop').onclick = closeDrawer;
+document.addEventListener('keydown', event => { if (event.key === 'Escape') closeDrawer(); });
+$('include-recording').onchange = renderPerformance;
+$('export-timings').onclick = () => call('exportTimings', { id: selectedId }).catch(error => toast(error.message));
+async function renderPerformance() {
+  const id = selectedId;
+  if (!id) return;
+  try {
+    const result = await call('timings', { id, includeRecording: $('include-recording').checked });
+    if (id !== selectedId || !result) return;
+    const { metrics, chart } = result;
+    $('latency-value').textContent = metrics.pasteMs != null && metrics.stopMs != null ? `${((metrics.pasteMs - metrics.stopMs) / 1000).toFixed(2)} s` : 'Not pasted';
+    $('latency-caption').textContent = metrics.pasteMs != null ? 'From finishing your recording to sending the paste shortcut.' : metrics.outcome;
+    const fragment = document.createDocumentFragment();
+    for (const row of chart.rows) {
+      const element = document.createElement('div'); element.className = 'timing-row' + (row.name.includes('Wait') ? ' wait' : ''); element.dataset.stage = row.name;
+      const label = document.createElement('div'); label.className = 'timing-name'; label.title = row.name; label.textContent = row.name.replace('Part 1 · ', '');
+      const track = document.createElement('div'); track.className = 'timing-track';
+      const bar = document.createElement('div'); bar.className = 'timing-bar'; const duration = Math.max(1, chart.duration);
+      bar.style.left = `${Math.max(0, row.start / duration * 100)}%`; bar.style.width = `${Math.min(100, row.duration / duration * 100)}%`; track.append(bar);
+      const value = document.createElement('div'); value.className = 'timing-value'; value.textContent = row.duration >= 1000 ? `${(row.duration / 1000).toFixed(2)} s` : `${Math.round(row.duration)} ms`;
+      element.append(label, track, value); fragment.append(element);
+    }
+    $('timings').replaceChildren(fragment);
+    $('timing-note').textContent = $('include-recording').checked ? 'Full session, including time spent speaking and clipboard cleanup.' : `Recording time and clipboard cleanup are excluded.${chart.completedEarly ? ` ${chart.completedEarly} stages finished before Stop.` : ''}`;
+    const facts = [['Audio length', `${metrics.audioSeconds.toFixed(1)} s`], ['Request size', `${(metrics.requestBytes / 1024).toFixed(0)} KB`], ['Longest UI gap', `${metrics.maxUiGapMs.toFixed(0)} ms`]];
+    $('timing-facts').replaceChildren(...facts.map(([name, text]) => { const item = document.createElement('div'); item.textContent = name; const value = document.createElement('strong'); value.textContent = text; item.append(value); return item; }));
+  } catch (error) { toast(error.message); }
+}
+window.whisper.onEvent(event => {
+  if (event.type === 'transcript') { history.unshift(event.entry); renderHistory(); }
+  if (event.type === 'history') { history = event.history; renderHistory(); if (selectedId && !history.some(entry => entry.id === selectedId)) closeDrawer(); }
+  if (event.type === 'metricsUpdated') { const entry = history.find(x => x.id === event.id); if (entry) entry.metrics = event.metrics; if (event.id === selectedId) renderPerformance(); }
+  if (event.type === 'stats') renderWordStats(event.stats);
+  if (event.type === 'balance') renderBalance(event.balance);
+  if (event.type === 'balanceError') { $('balance-detail').textContent = latestBalance ? 'Refresh failed. Showing the last known balance.' : 'Balance unavailable. Try refreshing.'; }
+  if (event.type === 'settings' || event.type === 'ready') renderSettings(event.settings);
+  if (event.type === 'ready') { document.querySelector('.engine-dot').classList.add('connected'); document.querySelector('.engine-dot').title = 'Ready to dictate'; }
+  if (event.type === 'engineOffline') { document.querySelector('.engine-dot').classList.remove('connected'); document.querySelector('.engine-dot').title = 'Engine offline. Restart the app.'; }
+  if (event.type === 'navigate') navigate(event.view);
+  if (event.type === 'notice') toast(event.message);
+});
+call('initial').then(initial => {
+  history = initial.history; renderHistory(); renderWordStats(initial.stats); renderSettings(initial.settings); renderBalance(initial.balance);
+  if (initial.historyError) toast('Saved history could not be read. The existing file has been left untouched.');
+}).catch(error => toast(error.message));
