@@ -198,6 +198,10 @@ public final class Settings implements SharedPreferences.OnSharedPreferenceChang
     public static final String PREF_SPELLCHECK_SUGGEST = "spellcheck_suggest";
     public static final String PREF_SHOW_ONLY_TOOLBAR_WITH_HARDWARE_KEYBOARD = "only_toolbar_with_hw_keyboard";
 
+    // Whisper
+    public static final String PREF_WHISPER_LANGUAGE = "whisper_language";
+    public static final String PREF_WHISPER_DICTIONARY = "whisper_dictionary";
+
     // Emoji
     public static final String PREF_EMOJI_MAX_SDK = "emoji_max_sdk";
     public static final String PREF_RECENT_EMOJIS = "recent_emojis";

@@ -105,7 +105,7 @@ open class SettingsActivity : ComponentActivity(), SharedPreferences.OnSharedPre
                         Scaffold(contentWindowInsets = WindowInsets.safeDrawing) { innerPadding ->
                             Column(Modifier.padding(innerPadding)) {
                                 TopAppBar(
-                                    title = { Text(stringResource(R.string.android_spell_checker_settings)) },
+                                    title = { Text(stringResource(R.string.local_whisper_spell_checker_settings_name)) },
                                     windowInsets = WindowInsets(0),
                                     navigationIcon = {
                                         BackButton { this@SettingsActivity.finish() }

@@ -8,20 +8,21 @@ SPDX-License-Identifier: Apache-2.0 AND GPL-3.0-only
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.READ_USER_DICTIONARY" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WRITE_USER_DICTIONARY" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
 
-    <application android:label="@string/english_ime_name"
+    <application android:label="@string/local_whisper_ime_name"
             android:name="helium314.keyboard.latin.App"
             android:icon="@mipmap/ic_launcher"
             android:roundIcon="@mipmap/ic_launcher_round"
             android:supportsRtl="true"
-            android:allowBackup="true"
-            android:defaultToDeviceProtectedStorage="true"
-            android:directBootAware="true"
+            android:allowBackup="false"
+            android:directBootAware="false"
             android:enableOnBackInvokedCallback="true"
             android:localeConfig="@xml/locales_config"
             tools:remove="android:appComponentFactory"
@@ -29,9 +30,9 @@ SPDX-License-Identifier: Apache-2.0 AND GPL-3.0-only
 
         <!-- Services -->
         <service android:name="LatinIME"
-                android:label="@string/english_ime_name"
+                android:label="@string/local_whisper_ime_name"
                 android:permission="android.permission.BIND_INPUT_METHOD"
-                android:directBootAware="true"
+                android:directBootAware="false"
                 android:exported="true">
             <intent-filter>
                 <action android:name="android.view.InputMethod" />
@@ -40,7 +41,7 @@ SPDX-License-Identifier: Apache-2.0 AND GPL-3.0-only
         </service>
 
         <service android:name=".spellcheck.AndroidSpellCheckerService"
-                 android:label="@string/spell_checker_service_name"
+                 android:label="@string/local_whisper_spell_checker_name"
                  android:permission="android.permission.BIND_TEXT_SERVICE"
                  android:exported="true">
             <intent-filter>
@@ -79,7 +80,7 @@ SPDX-License-Identifier: Apache-2.0 AND GPL-3.0-only
 
         <activity android:name=".spellcheck.SpellCheckerSettingsActivity"
                 android:theme="@style/platformActivityTheme"
-                android:label="@string/spell_checker_service_name"
+                android:label="@string/local_whisper_spell_checker_name"
                 android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

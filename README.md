@@ -1,10 +1,10 @@
-# HeliBoard
-HeliBoard is a privacy-conscious and customizable open-source keyboard, based on AOSP / OpenBoard.
-Does not use internet permission, and thus is 100% offline.
+# Local Whisper Keyboard
 
-[<img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" alt="Get it on F-Droid" height="80">](https://f-droid.org/packages/helium314.keyboard/)
-[<img src="https://user-images.githubusercontent.com/663460/26973090-f8fdc986-4d14-11e7-995a-e7c5e79ed925.png" alt="Get APK from GitHub" height="80">](https://github.com/HeliBorg/HeliBoard/releases/latest)
-[<img src="https://gitlab.com/IzzyOnDroid/repo/-/raw/master/assets/IzzyOnDroid.png" alt="Get it on IzzyOnDroid" height="80">](https://apt.izzysoft.de/fdroid/index/apk/helium314.keyboard)
+Local Whisper Keyboard is a personal Android keyboard based on HeliBoard 4.1. Tap the microphone once to record and again to send compressed audio to OpenRouter's `openai/gpt-transcribe` model. The returned transcript is inserted into the active text field.
+
+The OpenRouter key is encrypted with Android Keystore. Preferred terms can be sent with each transcription. See [ANDROID_NOTES.md](ANDROID_NOTES.md) for implementation details and current limits.
+
+The keyboard functionality, layouts, themes, suggestions, and other non-voice features come from [HeliBoard](https://github.com/HeliBorg/HeliBoard).
 
 ## Table of Contents
 

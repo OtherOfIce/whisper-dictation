@@ -10,7 +10,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "helium314.keyboard"
+        applicationId = "org.localwhisper.keyboard"
         minSdk = 21
         targetSdk = 37
         versionCode = 4101
@@ -65,7 +65,7 @@ android {
             }
             variant.outputs.forEach { output ->
                 if (output is com.android.build.api.variant.impl.VariantOutputImpl) {
-                    output.outputFileName = "HeliBoard_${defaultConfig.versionName}-${variant.buildType}.apk"
+                    output.outputFileName = "LocalWhisperKeyboard_${defaultConfig.versionName}-${variant.buildType}.apk"
                 }
             }
         }
@@ -83,13 +83,6 @@ android {
         }
     }
     ndkVersion = "28.0.13004108"
-
-    packaging {
-        jniLibs {
-            // shrinks APK by 3 MB, zipped size unchanged
-            useLegacyPackaging = true
-        }
-    }
 
     testOptions {
         unitTests {
@@ -115,6 +108,9 @@ android {
 }
 
 dependencies {
+    // OpenRouter transcription
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
     // androidx
     implementation("androidx.core:core-ktx:1.17.0") // 1.18.0 requires minSdk 23
     implementation("androidx.recyclerview:recyclerview:1.4.0")
