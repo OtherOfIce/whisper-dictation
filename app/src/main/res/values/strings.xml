@@ -1079,7 +1079,14 @@ New dictionary:
     <string name="gesture_data_take_me_there">Take me there</string>
 
     <!-- WhisperBoard settings -->
-    <string name="whisper_settings_title">Whisper Voice Input</string>
+    <string name="whisper_settings_title">OpenRouter voice input</string>
+    <string name="whisper_openrouter_api_key">OpenRouter API key</string>
+    <string name="whisper_api_key_stored">An encrypted API key is stored on this device.</string>
+    <string name="whisper_api_key_missing">No API key is stored.</string>
+    <string name="whisper_api_key_locked">Unlock this device to manage the API key.</string>
+    <string name="whisper_dictionary_title">Preferred terms</string>
+    <string name="whisper_dictionary_hint">One name or term per line. Up to 1,000 terms, 120 characters per term, and 12,000 characters total.</string>
+    <string name="whisper_privacy_notice">Voice input sends recorded audio and preferred terms to OpenRouter and OpenAI for transcription. Cancel stops work that has not completed, but cannot retract audio already uploaded.</string>
     <string name="whisper_language_title">Transcription language</string>
     <string name="whisper_models_category">Models</string>
     <string name="whisper_models_french">French-optimized models (recommended)</string>

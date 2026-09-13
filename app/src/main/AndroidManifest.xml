@@ -16,23 +16,22 @@ SPDX-License-Identifier: Apache-2.0 AND GPL-3.0-only
     <uses-permission android:name="android.permission.WRITE_USER_DICTIONARY" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
 
-    <application android:label="@string/english_ime_name"
+    <application android:label="@string/local_whisper_ime_name"
             android:name="helium314.keyboard.latin.App"
             android:icon="@mipmap/ic_launcher"
             android:roundIcon="@mipmap/ic_launcher_round"
             android:supportsRtl="true"
-            android:allowBackup="true"
-            android:defaultToDeviceProtectedStorage="true"
-            android:directBootAware="true"
+            android:allowBackup="false"
+            android:directBootAware="false"
             android:enableOnBackInvokedCallback="true"
             tools:remove="android:appComponentFactory"
             tools:targetApi="p">
 
         <!-- Services -->
         <service android:name="LatinIME"
-                android:label="@string/english_ime_name"
+                android:label="@string/local_whisper_ime_name"
                 android:permission="android.permission.BIND_INPUT_METHOD"
-                android:directBootAware="true"
+                android:directBootAware="false"
                 android:exported="true">
             <intent-filter>
                 <action android:name="android.view.InputMethod" />

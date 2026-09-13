@@ -1,148 +1,87 @@
 package helium314.keyboard.latin.whisper
 
 import android.annotation.SuppressLint
-import android.media.AudioFormat
-import android.media.AudioRecord
+import android.content.Context
 import android.media.MediaRecorder
+import android.os.Build
 import android.util.Log
+import java.io.File
+import java.util.UUID
 
 private const val TAG = "AudioRecorder"
-private const val SAMPLE_RATE = 16000
 
-class AudioRecorder {
-    private var audioRecord: AudioRecord? = null
-    private var recordingThread: Thread? = null
-    @Volatile
-    private var isRecording = false
-    private val allSamples = mutableListOf<Short>()
-
-    /** Optional callback for streaming mode — receives raw PCM 16-bit chunks as ByteArray */
-    var onAudioChunk: ((ByteArray) -> Unit)? = null
-
-    val isActive: Boolean get() = isRecording
+class AudioRecorder(private val context: Context) {
+    private var recorder: MediaRecorder? = null
+    private var outputFile: File? = null
+    @Volatile private var autoStopped = false
+    val isActive: Boolean get() = recorder != null
 
     @SuppressLint("MissingPermission")
     fun start(): Boolean {
-        if (isRecording) return true
-
-        // Force cleanup of any leftover recording resources
-        forceCleanup()
-
-        allSamples.clear()
-
-        val bufferSize = AudioRecord.getMinBufferSize(
-            SAMPLE_RATE,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT
-        ) * 4
-
-        val recorder = AudioRecord(
-            MediaRecorder.AudioSource.MIC,
-            SAMPLE_RATE,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            bufferSize
-        )
-
-        if (recorder.state != AudioRecord.STATE_INITIALIZED) {
-            Log.e(TAG, "AudioRecord failed to initialize")
-            recorder.release()
-            return false
+        if (isActive) return true
+        cancel()
+        autoStopped = false
+        val file = File(context.cacheDir, "dictation-${UUID.randomUUID()}.m4a")
+        val mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(context) else {
+            @Suppress("DEPRECATION")
+            MediaRecorder()
         }
-
-        audioRecord = recorder
-        isRecording = true
-
-        recordingThread = Thread({
-            val buffer = ShortArray(bufferSize / 2)
-            recorder.startRecording()
-            Log.d(TAG, "Recording started")
-
-            while (isRecording) {
-                val read = recorder.read(buffer, 0, buffer.size)
-                if (read > 0) {
-                    val chunkCallback = onAudioChunk
-                    if (chunkCallback != null) {
-                        // Streaming mode: convert shorts to little-endian bytes and send
-                        val byteBuffer = java.nio.ByteBuffer.allocate(read * 2)
-                            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                        for (i in 0 until read) {
-                            byteBuffer.putShort(buffer[i])
-                        }
-                        chunkCallback(byteBuffer.array())
-                    } else {
-                        // Local mode: accumulate samples
-                        synchronized(allSamples) {
-                            for (i in 0 until read) {
-                                allSamples.add(buffer[i])
-                            }
-                        }
-                    }
-                }
+        return try {
+            mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            mediaRecorder.setAudioChannels(1)
+            mediaRecorder.setAudioSamplingRate(16_000)
+            mediaRecorder.setAudioEncodingBitRate(48_000)
+            mediaRecorder.setMaxDuration(300_000)
+            mediaRecorder.setMaxFileSize(4L * 1024L * 1024L)
+            mediaRecorder.setOnInfoListener { _, what, _ ->
+                if (recorder === mediaRecorder &&
+                    (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED ||
+                        what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_FILESIZE_REACHED)) autoStopped = true
             }
-
-            try {
-                recorder.stop()
-            } catch (e: Exception) {
-                Log.w(TAG, "Error stopping AudioRecord", e)
-            }
-            try {
-                recorder.release()
-            } catch (e: Exception) {
-                Log.w(TAG, "Error releasing AudioRecord", e)
-            }
-            Log.d(TAG, "Recording stopped, ${allSamples.size} samples collected")
-        }, "WhisperAudioRecorder")
-
-        recordingThread?.start()
-        return true
+            mediaRecorder.setOutputFile(file.absolutePath)
+            mediaRecorder.prepare()
+            mediaRecorder.start()
+            outputFile = file
+            recorder = mediaRecorder
+            true
+        } catch (error: Exception) {
+            Log.e(TAG, "Could not start microphone recorder", error)
+            runCatching { mediaRecorder.release() }
+            file.delete()
+            false
+        }
     }
 
-    fun stop(): FloatArray {
-        isRecording = false
-        recordingThread?.join(3000)
-        if (recordingThread?.isAlive == true) {
-            Log.w(TAG, "Recording thread still alive after join timeout, forcing cleanup")
-            forceCleanup()
+    fun stop(): File? {
+        val current = recorder ?: return null
+        val file = outputFile
+        recorder = null
+        outputFile = null
+        return try {
+            if (!autoStopped) current.stop()
+            file?.takeIf { it.isFile && it.length() > 0L }
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "Recording was too short or interrupted", error)
+            file?.delete()
+            null
+        } finally {
+            current.setOnInfoListener(null)
+            runCatching { current.release() }
         }
-        recordingThread = null
-        audioRecord = null
-
-        val samples: ShortArray
-        synchronized(allSamples) {
-            samples = allSamples.toShortArray()
-            allSamples.clear()
-        }
-
-        return shortToFloat(samples)
     }
 
-    private fun forceCleanup() {
-        // Force-stop any lingering AudioRecord that wasn't properly released
-        try {
-            audioRecord?.stop()
-        } catch (e: Exception) {
-            Log.w(TAG, "Error force-stopping AudioRecord", e)
+    fun cancel() {
+        val current = recorder
+        recorder = null
+        if (current != null) {
+            current.setOnInfoListener(null)
+            runCatching { current.stop() }
+            runCatching { current.release() }
         }
-        try {
-            audioRecord?.release()
-        } catch (e: Exception) {
-            Log.w(TAG, "Error force-releasing AudioRecord", e)
-        }
-        audioRecord = null
-
-        // Interrupt lingering thread
-        if (recordingThread?.isAlive == true) {
-            Log.w(TAG, "Force-interrupting lingering recording thread")
-            recordingThread?.interrupt()
-            recordingThread?.join(500)
-        }
-        recordingThread = null
-    }
-
-    private fun shortToFloat(data: ShortArray): FloatArray {
-        return FloatArray(data.size) { i ->
-            (data[i] / 32767.0f).coerceIn(-1f, 1f)
-        }
+        outputFile?.delete()
+        outputFile = null
+        autoStopped = false
     }
 }

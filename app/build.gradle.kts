@@ -8,10 +8,10 @@ plugins {
 }
 
 android {
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
-        applicationId = "helium314.keyboard"
+        applicationId = "org.localwhisper.keyboard"
         minSdk = 21
         targetSdk = 35
         versionCode = 3801
@@ -23,22 +23,12 @@ android {
         proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
     }
 
-    signingConfigs {
-        create("release") {
-            storeFile = file("../whisperboard-release.jks")
-            storePassword = "digitis2026"
-            keyAlias = "whisperboard"
-            keyPassword = "digitis2026"
-        }
-    }
-
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = false
             isDebuggable = false
             isJniDebuggable = false
-            signingConfig = signingConfigs.getByName("release")
         }
         create("nouserlib") { // same as release, but does not allow the user to provide a library
             isMinifyEnabled = true
@@ -64,7 +54,7 @@ android {
             signingConfig = signingConfigs.getByName("debug")
             applicationIdSuffix = ".debug"
         }
-        base.archivesBaseName = "WhisperBoard_" + defaultConfig.versionName
+        base.archivesBaseName = "LocalWhisperKeyboard_" + defaultConfig.versionName
         // got a little too big for GitHub after some dependency upgrades, so we remove the largest dictionary
         androidComponents.onVariants { variant: ApplicationVariant ->
             if (variant.buildType == "debug") {
@@ -88,14 +78,7 @@ android {
             path = File("src/main/jni/Android.mk")
         }
     }
-    ndkVersion = "28.0.13004108"
-
-    packaging {
-        jniLibs {
-            // shrinks APK by 3 MB, zipped size unchanged
-            useLegacyPackaging = true
-        }
-    }
+    ndkVersion = "27.1.12297006"
 
     testOptions {
         unitTests {
@@ -125,10 +108,7 @@ android {
 }
 
 dependencies {
-    // sherpa-onnx 1.12.40 — moteur Parakeet TDT v3 multilingue
-    implementation(files("libs/sherpa-onnx-1.12.40.aar"))
-
-    // deepgram streaming (WebSocket)
+    // OpenRouter transcription
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // androidx

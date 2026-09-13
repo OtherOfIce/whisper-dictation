@@ -92,6 +92,10 @@ LOCAL_SDK_VERSION := 14
 LOCAL_NDK_STL_VARIANT := c++_static
 LOCAL_LDFLAGS += -ldl
 
+# Android 15 and newer support devices with 16 KiB memory pages. NDK r27
+# needs these linker flags explicitly for compatible ELF LOAD segments.
+LOCAL_LDFLAGS += -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384
+
 # Avoid issues with reproducible builds, see https://gitlab.com/fdroid/rfp/-/issues/2662
 LOCAL_LDFLAGS += -Wl,--build-id=none
 

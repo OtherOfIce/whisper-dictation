@@ -74,6 +74,7 @@ import helium314.keyboard.latin.utils.ColorUtilKt;
 import helium314.keyboard.latin.utils.GestureDataGatheringKt;
 import helium314.keyboard.latin.utils.InlineAutofillUtils;
 import helium314.keyboard.latin.utils.InputMethodPickerKt;
+import helium314.keyboard.latin.utils.InputTypeUtils;
 import helium314.keyboard.latin.utils.JniUtils;
 import helium314.keyboard.latin.utils.KtxKt;
 import helium314.keyboard.latin.utils.LeakGuardHandlerWrapper;
@@ -184,6 +185,7 @@ public class LatinIME extends InputMethodService implements
     private final ClipboardHistoryManager mClipboardHistoryManager = new ClipboardHistoryManager(this);
     private WhisperManager mWhisperManager;
     private ActionBarController mActionBarController;
+    private long mWhisperEditorSessionToken = 0;
 
     public static final class UIHandler extends LeakGuardHandlerWrapper<LatinIME> {
         private static final int MSG_UPDATE_SHIFT_STATE = 0;
@@ -551,9 +553,12 @@ public class LatinIME extends InputMethodService implements
 
         // Initialize Whisper voice input
         mWhisperManager = new WhisperManager(this);
-        mWhisperManager.setOnTranscriptionResult(text -> {
+        mWhisperManager.setOnTranscriptionResult(result -> {
+            if (result.getEditorSessionToken() != mWhisperEditorSessionToken) {
+                return Unit.INSTANCE;
+            }
             mInputLogic.mConnection.finishComposingText();
-            mInputLogic.mConnection.commitText(text, 1);
+            mInputLogic.mConnection.commitText(result.getText(), 1);
             return Unit.INSTANCE;
         });
         mWhisperManager.setOnStateChanged(state -> {
@@ -565,7 +570,6 @@ public class LatinIME extends InputMethodService implements
             }
             return Unit.INSTANCE;
         });
-        mWhisperManager.preloadModel();
 
         // Register to receive ringer mode change.
         final IntentFilter filter = new IntentFilter();
@@ -786,10 +790,7 @@ public class LatinIME extends InputMethodService implements
         mActionBarController = new ActionBarController(
             actionBarView,
             (Runnable) () -> {
-                if (mWhisperManager != null) mWhisperManager.pressRecord();
-            },
-            (Runnable) () -> {
-                if (mWhisperManager != null) mWhisperManager.releaseRecord();
+                if (mWhisperManager != null) mWhisperManager.toggleRecording();
             },
             (java.util.function.Consumer<String>) (result) -> {
                 mInputLogic.mConnection.commitText(result, 1);
@@ -818,17 +819,28 @@ public class LatinIME extends InputMethodService implements
 
     @Override
     public void onStartInput(final EditorInfo editorInfo, final boolean restarting) {
+        mWhisperEditorSessionToken++;
+        if (mWhisperManager != null) {
+            final boolean secure = editorInfo == null || InputTypeUtils.isAnyPasswordInputType(editorInfo.inputType);
+            mWhisperManager.onEditorSessionChanged(mWhisperEditorSessionToken, secure);
+        }
         mHandler.onStartInput(editorInfo, restarting);
     }
 
     @Override
     public void onStartInputView(final EditorInfo editorInfo, final boolean restarting) {
+        mWhisperEditorSessionToken++;
+        if (mWhisperManager != null) {
+            final boolean secure = editorInfo == null || InputTypeUtils.isAnyPasswordInputType(editorInfo.inputType);
+            mWhisperManager.onEditorSessionChanged(mWhisperEditorSessionToken, secure);
+        }
         mHandler.onStartInputView(editorInfo, restarting);
         mStatsUtilsManager.onStartInputView();
     }
 
     @Override
     public void onFinishInputView(final boolean finishingInput) {
+        invalidateWhisperEditorSession();
         StatsUtils.onFinishInputView();
         mHandler.onFinishInputView(finishingInput);
         mStatsUtilsManager.onFinishInputView();
@@ -837,7 +849,15 @@ public class LatinIME extends InputMethodService implements
 
     @Override
     public void onFinishInput() {
+        invalidateWhisperEditorSession();
         mHandler.onFinishInput();
+    }
+
+    private void invalidateWhisperEditorSession() {
+        mWhisperEditorSessionToken++;
+        if (mWhisperManager != null) {
+            mWhisperManager.onEditorSessionChanged(mWhisperEditorSessionToken, true);
+        }
     }
 
     @Override
@@ -1052,6 +1072,7 @@ public class LatinIME extends InputMethodService implements
 
     @Override
     public void onWindowHidden() {
+        invalidateWhisperEditorSession();
         super.onWindowHidden();
         Log.i(TAG, "onWindowHidden");
         final MainKeyboardView mainKeyboardView = mKeyboardSwitcher.getMainKeyboardView();
