@@ -8,6 +8,7 @@ const { projectTimings } = require('./model.cjs');
 const { HistoryStore } = require('./history-store.cjs');
 const { getWordStats } = require('./stats.cjs');
 const testMode = process.argv.includes('--ui-test');
+const startupMode = process.argv.includes('--startup');
 app.setName('Local Whisper');
 if (testMode) app.setPath('userData', path.join(app.getPath('temp'), 'local-whisper-ui-test'));
 if (!app.requestSingleInstanceLock()) { app.quit(); }
@@ -168,7 +169,7 @@ else {
       startEngine();
       setInterval(() => { if (main.isVisible()) { refreshCredits(); broadcast({ type: 'stats', stats: getWordStats(history) }); } }, 60000).unref();
     }
-    main.show();
+    if (!startupMode) main.show();
     if (testMode) await require('./tests/ui-smoke.cjs').run({ main, overlay, app, engineEvent });
   }).catch(error => { if (testMode) console.error(error); app.exit(1); });
 }
