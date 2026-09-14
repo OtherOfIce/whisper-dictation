@@ -1,17 +1,36 @@
 const wave = document.getElementById('wave');
-const bars = Array.from({ length: 13 }, () => { const bar = document.createElement('span'); bar.className = 'bar'; bar.style.height = '3px'; wave.append(bar); return bar; });
-const levels = Array(13).fill(0);
+const pill = document.getElementById('pill');
+const cancel = document.getElementById('cancel');
+const finish = document.getElementById('finish');
+const envelope = [.36, .58, .76, .9, 1, .92, .78, .62, .46, .34];
+const heights = envelope.map(level => 3 + level * 10);
+const bars = envelope.map(() => { const bar = document.createElement('span'); bar.className = 'bar'; wave.append(bar); return bar; });
+let busy = false;
+let targetLevel = .6;
+let displayLevel = targetLevel;
 function update(state) {
-  const busy = state.mode === 'Busy';
-  const locked = state.mode === 'Locked';
-  wave.classList.toggle('busy', busy);
-  document.querySelector('.pill').classList.toggle('locked', locked);
-  for (const button of document.querySelectorAll('button')) button.hidden = !locked;
-  document.getElementById('finish').disabled = busy;
-  levels.shift(); levels.push(Math.min(1, (state.level || 0) * 4));
-  if (!busy) bars.forEach((bar, i) => { bar.style.height = `${3 + levels[i] * 20}px`; });
+  busy = state.mode === 'Busy';
+  const lockMode = state.mode === 'LockMode';
+  pill.classList.toggle('busy', busy);
+  pill.classList.toggle('lock-mode', lockMode);
+  pill.setAttribute('aria-label', busy ? 'Transcribing' : 'Recording');
+  cancel.hidden = !lockMode;
+  finish.hidden = !lockMode;
+  if (!busy) targetLevel = Math.max(.2, Math.min(1, (state.level || 0) * 4));
 }
+function draw(time) {
+  displayLevel += (targetLevel - displayLevel) * .12;
+  bars.forEach((bar, index) => {
+    const target = busy
+      ? 4 + envelope[index] * (6 + (Math.sin(time / 210) + 1) * 3)
+      : 3 + envelope[index] * displayLevel * 17;
+    heights[index] += (target - heights[index]) * .18;
+    bar.style.height = `${heights[index].toFixed(2)}px`;
+  });
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
 window.whisper.onEvent(event => { if (event.type === 'state') update(event); });
 window.whisper.call('initial').then(result => update(result.state));
-document.getElementById('cancel').onclick = () => window.whisper.call('cancel').catch(() => {});
-document.getElementById('finish').onclick = () => window.whisper.call('finish').catch(() => {});
+cancel.onclick = () => window.whisper.call('cancel').catch(() => {});
+finish.onclick = () => window.whisper.call('finish').catch(() => {});

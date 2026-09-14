@@ -15,6 +15,7 @@ if (testMode) app.setPath('userData', path.join(app.getPath('temp'), 'local-whis
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 else {
   let main, overlay, tray, engine, quitting = false, state = { mode: 'Idle' }, history = [], historyError = false;
+  const testOverlayActions = [];
   let nextId = 0, settings = {}, balance = null, refreshPromise, saveQueue = Promise.resolve();
   const pending = new Map();
   const historyPath = () => path.join(app.getPath('userData'), 'history.sqlite');
@@ -55,11 +56,13 @@ else {
     if (event.type === 'ready') { settings = event.settings; refreshCredits(); }
     if (event.type === 'state') {
       const wasIdle = state.mode === 'Idle'; state = event;
+      const overlayInteractive = event.mode === 'LockMode';
+      overlay.setIgnoreMouseEvents(!overlayInteractive);
       if (event.mode === 'Idle') overlay.hide();
       else {
         if (wasIdle) {
           const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
-          overlay.setPosition(Math.round(area.x + (area.width - 192) / 2), area.y + area.height - 76);
+          overlay.setPosition(Math.round(area.x + (area.width - 192) / 2), area.y + area.height - 64);
         }
         if (!overlay.isVisible()) overlay.showInactive();
       }
@@ -131,7 +134,7 @@ else {
     if (isOverlay) {
       if (method === 'initial') return { state };
       if (!['cancel', 'finish'].includes(method)) throw new Error('Unknown toolbar action.');
-      if (testMode) return null;
+      if (testMode) { testOverlayActions.push(method); return null; }
       return send(method, method === 'finish' ? { fromOverlay: true } : {});
     }
     switch (method) {
@@ -217,8 +220,9 @@ else {
     const webPreferences = { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false };
     main = new BrowserWindow({ width: 1220, height: 820, minWidth: 850, minHeight: 600, frame: false, backgroundColor: '#f5f4f0', show: false, webPreferences });
     main.on('close', event => { if (!quitting) { event.preventDefault(); main.hide(); } });
-    overlay = new BrowserWindow({ width: 192, height: 62, frame: false, transparent: true, resizable: false, focusable: true, skipTaskbar: true, alwaysOnTop: true, show: false, hasShadow: false, webPreferences });
+    overlay = new BrowserWindow({ width: 192, height: 56, frame: false, transparent: true, resizable: false, focusable: false, skipTaskbar: true, alwaysOnTop: true, show: false, hasShadow: false, webPreferences });
     overlay.setAlwaysOnTop(true, 'screen-saver');
+    overlay.setIgnoreMouseEvents(true);
     if (testMode) for (const win of [main, overlay]) win.webContents.on('console-message', event => console.log('renderer:', event.message));
     await Promise.all([secure(main, 'index.html'), secure(overlay, 'overlay.html')]);
     if (!testMode) {
@@ -230,6 +234,6 @@ else {
       setInterval(() => { if (main.isVisible()) { refreshCredits(); broadcast({ type: 'stats', stats: getWordStats(history) }); } }, 60000).unref();
     }
     if (!startupMode) main.show();
-    if (testMode) await require('./tests/ui-smoke.cjs').run({ main, overlay, app, engineEvent });
+    if (testMode) await require('./tests/ui-smoke.cjs').run({ main, overlay, app, engineEvent, testOverlayActions });
   }).catch(error => { if (testMode) console.error(error); app.exit(1); });
 }

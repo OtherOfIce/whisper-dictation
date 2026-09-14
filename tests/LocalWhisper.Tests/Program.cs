@@ -152,8 +152,8 @@ internal static class Program
         g.Press(1000); g.Release(1100);
         Check(g.Mode == CaptureMode.WaitingForTap, "Short tap waits for second press");
         Check(g.Tick(1450) == GestureAction.None, "Double-tap boundary is inclusive");
-        Check(g.Press(1450) == GestureAction.None && g.Mode == CaptureMode.Locked, "Second tap locks same recording");
-        Check(g.Release(1500) == GestureAction.None && g.Mode == CaptureMode.Locked, "Release keeps locked capture alive");
+        Check(g.Press(1450) == GestureAction.None && g.Mode == CaptureMode.LockMode, "Second tap enters lock mode");
+        Check(g.Release(1500) == GestureAction.None && g.Mode == CaptureMode.LockMode, "Release keeps lock mode recording alive");
         Check(g.Tick(60000) == GestureAction.None, "Locked capture does not finish on timer");
         Check(g.Press(61000) == GestureAction.Finish, "Next press finishes locked capture");
         g.Reset(); g.Press(0); g.Release(100);
@@ -161,8 +161,8 @@ internal static class Program
         g.Reset(); g.Press(0); g.Release(100);
         Check(g.Press(451) == GestureAction.Finish, "Late tap cannot lock");
         var lockedByDefault = new Gesture(true);
-        Check(lockedByDefault.Press(0) == GestureAction.Start && lockedByDefault.Mode == CaptureMode.Locked, "Lock mode starts directly locked");
-        Check(lockedByDefault.Release(100) == GestureAction.None && lockedByDefault.Mode == CaptureMode.Locked, "Lock mode ignores shortcut release");
+        Check(lockedByDefault.Press(0) == GestureAction.Start && lockedByDefault.Mode == CaptureMode.LockMode, "Lock mode starts directly in lock mode");
+        Check(lockedByDefault.Release(100) == GestureAction.None && lockedByDefault.Mode == CaptureMode.LockMode, "Lock mode ignores shortcut release");
         Check(lockedByDefault.Press(200) == GestureAction.Finish, "Shortcut accepts a lock-mode recording");
         g.Reset(); g.Press(0); g.Reset();
         Check(g.Release(200) == GestureAction.None && g.Tick(1000) == GestureAction.None, "Cancelled capture cannot submit on release");
