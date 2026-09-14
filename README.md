@@ -6,12 +6,14 @@ OpenRouter-powered dictation for Windows and Android. The desktop app uses an El
 
 Run `dist/electron/LocalWhisper-win32-x64/LocalWhisper.exe`. Your existing OpenRouter key is reused automatically.
 
-- Hold Ctrl + Win to speak. Release to finish and paste.
-- Double-tap to lock recording; press again or click the checkmark to finish.
+- Press Ctrl + Win to speak. Recordings start in lock mode by default, so press the shortcut again or click the checkmark to finish.
+- Turn off Start in lock mode in Settings to use hold-to-speak and double-tap locking instead. Escape or the stop button cancels a recording.
 - The floating waveform has no text and only appears while recording or processing.
 - History is searchable, survives restarts, and supports copying and deleting transcripts.
 - Word counts show total, today, and the last seven local calendar days. Counts use saved history before cleanup, so deleting a transcript removes its words from these totals.
-- Settings includes a Dictionary box. Paste preferred terms or phrases, one per line, and save. The full list is sent to GPT Transcribe as OpenRouter keyword hints, independently of Luna cleanup. Blank lines and case-insensitive duplicates are removed; clearing and saving disables hints. Terms are encrypted locally. The app caps lists at 1,000 terms, 120 characters per term, and 12,000 characters total; these are application limits, not verified provider limits. Large-list accuracy and latency remain untested.
+- Settings lets you choose GPT-Transcribe, MAI-Transcribe-2 Verbatim, or MAI-Transcribe-2 Clean. MAI Clean is the default and removes some fillers and false starts before the optional Luna cleanup stage.
+- Settings includes a Dictionary box. Paste preferred terms or phrases, one per line, and save. The full list is sent as recognition hints using the selected provider's request format, independently of Luna cleanup. Blank lines and case-insensitive duplicates are removed; clearing and saving disables hints. Terms are encrypted locally. The app caps lists at 1,000 terms, 120 characters per term, and 12,000 characters total; these are application limits, not verified provider limits. Large-list accuracy and latency remain untested.
+- The Dictionary section can import active terms from a local Wispr Flow installation. It merges them with the terms already in the editor, uses the final text of replacement entries, skips snippets, and saves the merged dictionary immediately.
 - Settings offers Off, Luna, and Luna Fast text cleanup. Cleanup resolves spoken corrections and formatting instructions before paste. It defaults to Off and adds a separate timing stage. The performance drawer can show the original transcript when cleanup changed it.
 - Hover over a transcript for its performance button. The graph excludes recording and clipboard cleanup by default; Include recording shows the full session.
 - The account card shows balance and usage using the existing key. When only a key allowance is available, it is labelled separately from account balance. A separate balance key is optional.
@@ -38,6 +40,8 @@ npm run test:engine
 npm run package
 ```
 
+To stop old project builds, rebuild everything, and launch the packaged Windows app in one step, run `.	oolsuild-windows.ps1` from the repository root.
+
 Native tests: `dotnet run --project tests/LocalWhisper.Tests -c Release`.
 The UI tests use demo fixtures and do not make API requests. The native `--credits` diagnostic checks the saved key without printing credentials or monetary amounts. The optional `--benchmark` diagnostic makes paid requests with generated speech.
 
@@ -46,6 +50,8 @@ The native engine communicates with Electron through private stdin/stdout pipes.
 See `docs/performance-investigation.md` for measured upload improvements. The prior WinForms build is retained in `dist/LocalWhisper` as a fallback.
 
 See `docs/transcribe-investigation.md` for the 12-file Wispr export benchmark, including actual API charges and per-file transcript comparisons. `docs/luna-wispr-investigation.md` compares Luna and Luna Fast on those same transcripts and records the compact prompt evaluation. `docs/luna-investigation.md` retains the earlier synthetic baseline.
+
+The private Wispr corpus exporter writes one `.dictionary.json` snapshot beside each recording. It reconstructs the terms available at recording time from Wispr's dictionary creation timestamps. The transcription evaluator loads that sample-specific snapshot automatically. Wispr's exported transcript is only a provisional reference and must be checked against the recording before treating its WER as a quality result.
 
 ## Android keyboard
 

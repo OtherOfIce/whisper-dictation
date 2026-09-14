@@ -90,15 +90,36 @@ $('refresh-balance').onclick = async () => {
 function renderSettings(settings) {
   $('key-status').textContent = settings.hasKey ? 'Saved securely' : 'Not connected';
   $('live-chunks').checked = !!settings.liveChunks;
+  $('lock-mode').checked = settings.lockMode !== false;
+  $('transcription-model').value = settings.transcriptionModel || 'mai-transcribe-2-clean';
   $('cleanup-mode').value = settings.cleanupMode || 'off';
   $('balance-key').placeholder = settings.hasBalanceKey ? 'Saved securely. Leave blank to keep it.' : 'Optional management key';
   $('dictionary-terms').value = Array.isArray(settings.dictionaryTerms) ? settings.dictionaryTerms.join('\n') : '';
 }
+$('lock-mode').onchange = async () => {
+  const checkbox = $('lock-mode'); const nextValue = checkbox.checked; checkbox.disabled = true;
+  try {
+    const settings = await call('setLockMode', { lockMode: nextValue });
+    renderSettings(settings); $('save-message').textContent = 'Lock mode updated';
+  } catch (error) {
+    checkbox.checked = !nextValue; toast(error.message);
+  } finally { checkbox.disabled = false; }
+};
+$('import-wispr').onclick = async () => {
+  const button = $('import-wispr'); button.disabled = true; $('import-wispr-status').textContent = '';
+  try {
+    const dictionaryTerms = $('dictionary-terms').value.split(/\r?\n/).map(term => term.trim()).filter(Boolean);
+    const result = await call('importWisprDictionary', { dictionaryTerms });
+    $('dictionary-terms').value = result.settings.dictionaryTerms.join('\n');
+    const skipped = result.skippedSnippets ? ` ${result.skippedSnippets} snippets were skipped.` : '';
+    $('import-wispr-status').textContent = `${result.added} new term${result.added === 1 ? '' : 's'} imported.${skipped}`;
+  } catch (error) { toast(error.message); } finally { button.disabled = false; }
+};
 $('settings-form').onsubmit = async event => {
   event.preventDefault(); const button = event.submitter; button.disabled = true;
   try {
     const dictionaryTerms = $('dictionary-terms').value.split(/\r?\n/).map(term => term.trim()).filter(Boolean);
-    const settings = await call('saveSettings', { apiKey: $('api-key').value, balanceKey: $('balance-key').value, clearBalanceKey: $('clear-balance-key').checked, liveChunks: $('live-chunks').checked, cleanupMode: $('cleanup-mode').value, dictionaryTerms });
+    const settings = await call('saveSettings', { apiKey: $('api-key').value, balanceKey: $('balance-key').value, clearBalanceKey: $('clear-balance-key').checked, liveChunks: $('live-chunks').checked, lockMode: $('lock-mode').checked, transcriptionModel: $('transcription-model').value, cleanupMode: $('cleanup-mode').value, dictionaryTerms });
     $('api-key').value = ''; $('balance-key').value = ''; $('clear-balance-key').checked = false;
     renderSettings(settings); $('save-message').textContent = 'Settings saved';
   } catch (error) { toast(error.message); } finally { button.disabled = false; }

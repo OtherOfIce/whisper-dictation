@@ -73,18 +73,20 @@ class WhisperManager(private val context: Context) {
         if (apiKey.isNullOrBlank()) { file.delete(); recordingFile = null; onStateChanged?.invoke(RecordingState.IDLE); return }
         val prefs = context.prefs()
         val language = prefs.getString(Settings.PREF_WHISPER_LANGUAGE, Defaults.PREF_WHISPER_LANGUAGE) ?: "auto"
+        val transcriptionModel = prefs.getString(Settings.PREF_WHISPER_TRANSCRIPTION_MODEL, Defaults.PREF_WHISPER_TRANSCRIPTION_MODEL)
+            ?: Defaults.PREF_WHISPER_TRANSCRIPTION_MODEL
         val dictionary = DictionaryLimits.validate(prefs.getString(Settings.PREF_WHISPER_DICTIONARY, "").orEmpty())
         if (dictionary.error != null) Toast.makeText(context, "Preferred terms are invalid; continuing without hints", Toast.LENGTH_LONG).show()
         val keywords = dictionary.keywords
         transcribing = true; onStateChanged?.invoke(RecordingState.TRANSCRIBING)
         job = scope.launch {
             try {
-                val text = client.transcribe(file, apiKey, language, keywords)
+                val text = client.transcribe(file, apiKey, language, keywords, transcriptionModel)
                 if (operationId == requestOperation && editorSessionToken == requestSession && text.isNotBlank())
                     onTranscriptionResult?.invoke(TranscriptionResult(text, requestSession))
             } catch (_: CancellationException) {
             } catch (error: Exception) {
-                Log.e(TAG, "Transcription request failed: ${error.javaClass.simpleName}")
+                Log.e(TAG, "Transcription request failed: ${error.javaClass.simpleName}: ${error.message}")
                 if (operationId == requestOperation) Toast.makeText(context, "Transcription failed", Toast.LENGTH_SHORT).show()
             } finally {
                 file.delete()

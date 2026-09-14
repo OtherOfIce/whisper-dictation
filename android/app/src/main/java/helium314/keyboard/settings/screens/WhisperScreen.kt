@@ -68,6 +68,8 @@ fun WhisperSettingsScreen(onClickBack: () -> Unit) {
             Spacer(Modifier.height(12.dp))
             LanguageSelector()
             Spacer(Modifier.height(12.dp))
+            TranscriptionModelSelector()
+            Spacer(Modifier.height(12.dp))
             OutlinedTextField(
                 value = dictionary,
                 onValueChange = { dictionary = it; dictionaryError = null },
@@ -92,6 +94,32 @@ fun WhisperSettingsScreen(onClickBack: () -> Unit) {
 }
 
 @Composable
+private fun TranscriptionModelSelector() {
+    val context = LocalContext.current
+    val prefs = context.prefs()
+    val items = listOf(
+        "gpt-transcribe" to "GPT-Transcribe",
+        "mai-transcribe-2-verbatim" to "MAI-Transcribe-2 · Verbatim",
+        "mai-transcribe-2-clean" to "MAI-Transcribe-2 · Clean",
+    )
+    var selected by remember {
+        mutableStateOf(prefs.getString(Settings.PREF_WHISPER_TRANSCRIPTION_MODEL, Defaults.PREF_WHISPER_TRANSCRIPTION_MODEL)
+            ?: Defaults.PREF_WHISPER_TRANSCRIPTION_MODEL)
+    }
+    Text(stringResource(R.string.whisper_transcription_model_title), style = MaterialTheme.typography.titleSmall)
+    items.forEach { (value, label) ->
+        Row {
+            RadioButton(selected = selected == value, onClick = {
+                selected = value
+                prefs.edit { putString(Settings.PREF_WHISPER_TRANSCRIPTION_MODEL, value) }
+            })
+            Text(label, modifier = Modifier.padding(top = 12.dp))
+        }
+    }
+    Text(stringResource(R.string.whisper_transcription_model_hint), style = MaterialTheme.typography.bodySmall)
+}
+
+@Composable
 private fun LanguageSelector() {
     val context = LocalContext.current
     val prefs = context.prefs()
@@ -107,6 +135,13 @@ private fun LanguageSelector() {
 }
 
 fun createWhisperSettings(context: Context) = listOf(
+    Setting(context, Settings.PREF_WHISPER_TRANSCRIPTION_MODEL, R.string.whisper_transcription_model_title) {
+        ListPreference(it, listOf(
+            "GPT-Transcribe" to "gpt-transcribe",
+            "MAI-Transcribe-2 · Verbatim" to "mai-transcribe-2-verbatim",
+            "MAI-Transcribe-2 · Clean" to "mai-transcribe-2-clean",
+        ), Defaults.PREF_WHISPER_TRANSCRIPTION_MODEL)
+    },
     Setting(context, Settings.PREF_WHISPER_LANGUAGE, R.string.whisper_language_title) {
         ListPreference(it, listOf("Auto-detect" to "auto", "English" to "en", "Francais" to "fr", "Deutsch" to "de", "Nederlands" to "nl"), Defaults.PREF_WHISPER_LANGUAGE)
     },

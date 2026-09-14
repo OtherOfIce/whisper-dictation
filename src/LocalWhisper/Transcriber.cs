@@ -4,12 +4,24 @@ using System.Net;
 
 namespace LocalWhisper;
 
+public static class TranscriptionModels
+{
+    public const string Gpt = "gpt-transcribe";
+    public const string MaiVerbatim = "mai-transcribe-2-verbatim";
+    public const string MaiClean = "mai-transcribe-2-clean";
+    public static bool IsValid(string value) => value is Gpt or MaiVerbatim or MaiClean;
+    public static bool IsMai(string value) => value is MaiVerbatim or MaiClean;
+}
+
 public sealed class Transcriber(HttpClient client)
 {
     public const string Model = "openai/gpt-transcribe";
+    public const string MaiModel = "microsoft/mai-transcribe-2";
     public async Task<string> TranscribeAsync(byte[] wav, string key, CancellationToken cancellation,
-        SessionMetrics? metrics = null, string prefix = "", string format = "wav", IReadOnlyList<string>? dictionaryTerms = null)
+        SessionMetrics? metrics = null, string prefix = "", string format = "wav", IReadOnlyList<string>? dictionaryTerms = null,
+        string transcriptionModel = TranscriptionModels.MaiClean)
     {
+        if (!TranscriptionModels.IsValid(transcriptionModel)) throw new InvalidOperationException("Invalid transcription model.");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         timeout.CancelAfter(TimeSpan.FromSeconds(45));
         cancellation = timeout.Token;
@@ -21,10 +33,25 @@ public sealed class Transcriber(HttpClient client)
         {
             var payload = new Dictionary<string, object>
             {
-                ["model"] = Model,
+                ["model"] = TranscriptionModels.IsMai(transcriptionModel) ? MaiModel : Model,
                 ["input_audio"] = new { data = Convert.ToBase64String(wav), format }
             };
-            if (dictionaryTerms is { Count: > 0 })
+            if (TranscriptionModels.IsMai(transcriptionModel))
+            {
+                var azure = new Dictionary<string, object>
+                {
+                    ["enhancedMode"] = new
+                    {
+                        modelOptions = new
+                        {
+                            transcribeStyle = transcriptionModel == TranscriptionModels.MaiClean ? "clean" : "verbatim"
+                        }
+                    }
+                };
+                if (dictionaryTerms is { Count: > 0 }) azure["phraseList"] = new { phrases = dictionaryTerms };
+                payload["provider"] = new { options = new { azure } };
+            }
+            else if (dictionaryTerms is { Count: > 0 })
                 payload["provider"] = new { options = new { openai = new { keywords = dictionaryTerms } } };
             content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(payload));
         }

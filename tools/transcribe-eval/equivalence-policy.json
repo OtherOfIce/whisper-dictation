@@ -1,0 +1,18 @@
+{
+  "description": "Orthographic forms that carry the same meaning in this English dictation benchmark.",
+  "ignoreDiacritics": true,
+  "normaliseNumbers": true,
+  "symbols": {
+    "+": " plus "
+  },
+  "wordGroups": [
+    ["armour", "armor"],
+    ["behaviour", "behavior"],
+    ["humour", "humor"],
+    ["practise", "practice"],
+    ["spoilt", "spoiled"]
+  ],
+  "phraseGroups": [
+    ["Wispr Flow", "Whisperflow"]
+  ]
+}

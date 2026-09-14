@@ -1318,7 +1318,9 @@ New dictionary:
     <string name="whisper_api_key_locked">Unlock this device to manage the API key.</string>
     <string name="whisper_dictionary_title">Preferred terms</string>
     <string name="whisper_dictionary_hint">One name or term per line. Up to 1,000 terms, 120 characters per term, and 12,000 characters total.</string>
-    <string name="whisper_privacy_notice">Voice input sends recorded audio and preferred terms to OpenRouter and OpenAI for transcription. Cancel stops work that has not completed, but cannot retract audio already uploaded.</string>
+    <string name="whisper_privacy_notice">Voice input sends recorded audio and preferred terms to OpenRouter and the selected transcription provider. Cancel stops work that has not completed, but cannot retract audio already uploaded.</string>
     <string name="whisper_language_title">Transcription language</string>
+    <string name="whisper_transcription_model_title">Voice model</string>
+    <string name="whisper_transcription_model_hint">Verbatim keeps fillers and false starts. Clean removes some spoken disfluencies.</string>
     <!-- new strings should go above the section for gesture data gathering -->
 </resources>

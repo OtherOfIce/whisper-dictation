@@ -160,6 +160,10 @@ internal static class Program
         Check(g.Tick(451) == GestureAction.Finish, "Single tap eventually submits");
         g.Reset(); g.Press(0); g.Release(100);
         Check(g.Press(451) == GestureAction.Finish, "Late tap cannot lock");
+        var lockedByDefault = new Gesture(true);
+        Check(lockedByDefault.Press(0) == GestureAction.Start && lockedByDefault.Mode == CaptureMode.Locked, "Lock mode starts directly locked");
+        Check(lockedByDefault.Release(100) == GestureAction.None && lockedByDefault.Mode == CaptureMode.Locked, "Lock mode ignores shortcut release");
+        Check(lockedByDefault.Press(200) == GestureAction.Finish, "Shortcut accepts a lock-mode recording");
         g.Reset(); g.Press(0); g.Reset();
         Check(g.Release(200) == GestureAction.None && g.Tick(1000) == GestureAction.None, "Cancelled capture cannot submit on release");
         g.Press(0); g.Release(100); g.Press(200);
@@ -172,7 +176,10 @@ internal static class Program
             Check(request.RequestUri!.ToString() == "https://openrouter.ai/api/v1/audio/transcriptions", "Correct endpoint");
             Check(request.Headers.Authorization?.Parameter == "test-only", "Key sent as bearer token");
             using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
-            Check(body.RootElement.GetProperty("model").GetString() == "openai/gpt-transcribe", "Exact requested model");
+            Check(body.RootElement.GetProperty("model").GetString() == Transcriber.MaiModel, "Default uses the MAI model");
+            var style = body.RootElement.GetProperty("provider").GetProperty("options").GetProperty("azure")
+                .GetProperty("enhancedMode").GetProperty("modelOptions").GetProperty("transcribeStyle").GetString();
+            Check(style == "clean", "Default uses MAI Clean transcription");
             Check(body.RootElement.GetProperty("input_audio").GetProperty("format").GetString() == "wav", "WAV format");
             Check(Convert.FromBase64String(body.RootElement.GetProperty("input_audio").GetProperty("data").GetString()!).SequenceEqual(new byte[] { 1, 2, 3 }), "Audio survives base64 encoding");
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"text\":\"  Hello, ä¸–ç•Œ!  \"}", Encoding.UTF8, "application/json") };

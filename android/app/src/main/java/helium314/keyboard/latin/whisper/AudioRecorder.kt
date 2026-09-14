@@ -2,86 +2,139 @@ package helium314.keyboard.latin.whisper
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.media.AudioFormat
+import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.os.Build
 import android.util.Log
 import java.io.File
+import java.io.RandomAccessFile
 import java.util.UUID
+import kotlin.concurrent.thread
 
 private const val TAG = "AudioRecorder"
 
 class AudioRecorder(private val context: Context) {
-    private var recorder: MediaRecorder? = null
+    private var recorder: AudioRecord? = null
     private var outputFile: File? = null
-    @Volatile private var autoStopped = false
+    private var writerThread: Thread? = null
+    @Volatile private var writerRunning = false
     val isActive: Boolean get() = recorder != null
 
     @SuppressLint("MissingPermission")
+    @Synchronized
     fun start(): Boolean {
         if (isActive) return true
         cancel()
-        autoStopped = false
-        val file = File(context.cacheDir, "dictation-${UUID.randomUUID()}.m4a")
-        val mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(context) else {
-            @Suppress("DEPRECATION")
-            MediaRecorder()
+        val minimumBuffer = AudioRecord.getMinBufferSize(
+            AudioRecordingSpec.SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+        )
+        if (minimumBuffer <= 0) return false
+        val bufferSize = maxOf(minimumBuffer, AudioRecordingSpec.SAMPLE_RATE / 5 * 2)
+        val file = File(context.cacheDir, "dictation-${UUID.randomUUID()}.${AudioRecordingSpec.FILE_EXTENSION}")
+        val audioRecord = try {
+            AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                AudioRecordingSpec.SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufferSize,
+            )
+        } catch (error: Exception) {
+            Log.e(TAG, "Could not create microphone recorder", error)
+            return false
         }
+        if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
+            audioRecord.release()
+            return false
+        }
+
+        var pendingOutput: RandomAccessFile? = null
         return try {
-            mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC)
-            mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            mediaRecorder.setAudioChannels(1)
-            mediaRecorder.setAudioSamplingRate(16_000)
-            mediaRecorder.setAudioEncodingBitRate(48_000)
-            mediaRecorder.setMaxDuration(300_000)
-            mediaRecorder.setMaxFileSize(4L * 1024L * 1024L)
-            mediaRecorder.setOnInfoListener { _, what, _ ->
-                if (recorder === mediaRecorder &&
-                    (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED ||
-                        what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_FILESIZE_REACHED)) autoStopped = true
+            val wavOutput = RandomAccessFile(file, "rw")
+            pendingOutput = wavOutput
+            wavOutput.setLength(0)
+            wavOutput.write(AudioRecordingSpec.wavHeader(0))
+            audioRecord.startRecording()
+            if (audioRecord.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                wavOutput.close()
+                pendingOutput = null
+                audioRecord.release()
+                file.delete()
+                return false
             }
-            mediaRecorder.setOutputFile(file.absolutePath)
-            mediaRecorder.prepare()
-            mediaRecorder.start()
+            recorder = audioRecord
             outputFile = file
-            recorder = mediaRecorder
+            writerRunning = true
+            writerThread = thread(name = "WhisperWavWriter") {
+                writePcm(audioRecord, wavOutput, bufferSize)
+            }
+            pendingOutput = null
             true
         } catch (error: Exception) {
             Log.e(TAG, "Could not start microphone recorder", error)
-            runCatching { mediaRecorder.release() }
+            runCatching { pendingOutput?.close() }
+            runCatching { audioRecord.release() }
             file.delete()
             false
         }
     }
 
+    @Synchronized
     fun stop(): File? {
         val current = recorder ?: return null
         val file = outputFile
         recorder = null
         outputFile = null
-        return try {
-            if (!autoStopped) current.stop()
-            file?.takeIf { it.isFile && it.length() > 0L }
-        } catch (error: RuntimeException) {
-            Log.w(TAG, "Recording was too short or interrupted", error)
+        stopWriter(current)
+        return file?.takeIf { it.isFile && it.length() > 44L } ?: run {
             file?.delete()
             null
-        } finally {
-            current.setOnInfoListener(null)
-            runCatching { current.release() }
         }
     }
 
+    @Synchronized
     fun cancel() {
         val current = recorder
         recorder = null
-        if (current != null) {
-            current.setOnInfoListener(null)
-            runCatching { current.stop() }
-            runCatching { current.release() }
-        }
+        if (current != null) stopWriter(current)
         outputFile?.delete()
         outputFile = null
-        autoStopped = false
+    }
+
+    private fun stopWriter(current: AudioRecord) {
+        writerRunning = false
+        runCatching { current.stop() }
+        val writer = writerThread
+        writerThread = null
+        if (writer != null && writer !== Thread.currentThread()) runCatching { writer.join(2_000) }
+        runCatching { current.release() }
+    }
+
+    private fun writePcm(audioRecord: AudioRecord, output: RandomAccessFile, bufferSize: Int) {
+        val buffer = ByteArray(bufferSize)
+        var pcmBytes = 0
+        try {
+            while (writerRunning && pcmBytes < AudioRecordingSpec.MAX_PCM_BYTES) {
+                val requested = minOf(buffer.size, AudioRecordingSpec.MAX_PCM_BYTES - pcmBytes)
+                val read = audioRecord.read(buffer, 0, requested)
+                if (read > 0) {
+                    output.write(buffer, 0, read)
+                    pcmBytes += read
+                } else if (read != 0 && writerRunning) {
+                    throw IllegalStateException("AudioRecord read failed: $read")
+                }
+            }
+        } catch (error: Exception) {
+            if (writerRunning) Log.e(TAG, "Could not record microphone audio", error)
+        } finally {
+            writerRunning = false
+            runCatching {
+                output.seek(0)
+                output.write(AudioRecordingSpec.wavHeader(pcmBytes))
+            }
+            runCatching { output.close() }
+        }
     }
 }

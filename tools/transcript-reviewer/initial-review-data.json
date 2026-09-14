@@ -1,0 +1,51 @@
+{
+  "format": "local-whisper-transcript-review-seed",
+  "version": 1,
+  "reviews": {
+    "20260906T101314Z-d1d98b37": {
+      "canonical": "Yes, the later Raikage can use lightning release armour, but to a less refined degree and obviously far less powerful, and it takes them decades to learn.",
+      "comment": "Raikage is correct. The Wispr text has a contaminated cut-off parenthetical; remove it.",
+      "verdict": "accepted",
+      "reviewed": true,
+      "excluded": false,
+      "exclusionReason": "",
+      "equivalenceNotes": ""
+    },
+    "20260906T113100Z-2cb950e0": {
+      "canonical": "They of course still have several.",
+      "comment": "MAI is correct. Wispr's 'current activ' is contamination from the cut-off text.",
+      "verdict": "accepted",
+      "reviewed": true,
+      "excluded": false,
+      "exclusionReason": "",
+      "equivalenceNotes": ""
+    },
+    "20260906T093411Z-7d34af02": {
+      "canonical": "Think, for example, of Mount Myoboku, where Jiraiya's toads live.",
+      "comment": "The intended meaning is Mount Myoboku and Jiraiya's toads from Naruto.",
+      "verdict": "needs-edit",
+      "reviewed": true,
+      "excluded": false,
+      "exclusionReason": "",
+      "equivalenceNotes": ""
+    },
+    "20260906T111439Z-ce1101c6": {
+      "canonical": "",
+      "comment": "Neither transcript is correct. Exclude this sample pending an accurate intended transcript.",
+      "verdict": "unclear",
+      "reviewed": true,
+      "excluded": true,
+      "exclusionReason": "Neither transcript is correct; pending an accurate intended transcript.",
+      "equivalenceNotes": ""
+    },
+    "20260912T172251Z-f114f6d2": {
+      "canonical": "I think for the moment on PC we're actually in a reasonably good state. Just the transcription alone seems to work pretty well and we do have a dictionary solution. I don't think we need to auto-populate it at the moment. I can just literally port my dictionary in from Wispr Flow and Typeless.",
+      "comment": "Wispr Flow versus Whisperflow naming is an accepted equivalence. Do not score that naming difference; the rest of the sample still needs review.",
+      "verdict": "",
+      "reviewed": false,
+      "excluded": false,
+      "exclusionReason": "",
+      "equivalenceNotes": "Wispr Flow and Whisperflow are accepted equivalents and should not count as a transcript error."
+    }
+  }
+}

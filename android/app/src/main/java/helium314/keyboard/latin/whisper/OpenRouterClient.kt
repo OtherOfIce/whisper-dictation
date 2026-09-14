@@ -26,12 +26,20 @@ class OpenRouterClient {
     private val callLock = Any()
     private var activeCall: Call? = null
 
-    suspend fun transcribe(file: File, apiKey: String, language: String, keywords: List<String>): String = withContext(Dispatchers.IO) {
-        val body = JSONObject().put("model", "openai/gpt-transcribe")
-            .put("input_audio", JSONObject().put("data", Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)).put("format", "m4a"))
+    suspend fun transcribe(file: File, apiKey: String, language: String, keywords: List<String>, transcriptionModel: String): String = withContext(Dispatchers.IO) {
+        val isMai = transcriptionModel == "mai-transcribe-2-verbatim" || transcriptionModel == "mai-transcribe-2-clean"
+        val body = JSONObject().put("model", if (isMai) "microsoft/mai-transcribe-2" else "openai/gpt-transcribe")
+            .put("input_audio", JSONObject().put("data", Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)).put("format", AudioRecordingSpec.API_FORMAT))
         if (language != "auto") body.put("language", language)
-        if (keywords.isNotEmpty()) body.put("provider", JSONObject().put("options",
-            JSONObject().put("openai", JSONObject().put("keywords", JSONArray(keywords)))))
+        if (isMai) {
+            val azure = JSONObject().put("enhancedMode", JSONObject().put("modelOptions", JSONObject().put(
+                "transcribeStyle", if (transcriptionModel == "mai-transcribe-2-clean") "clean" else "verbatim")))
+            if (keywords.isNotEmpty()) azure.put("phraseList", JSONObject().put("phrases", JSONArray(keywords)))
+            body.put("provider", JSONObject().put("options", JSONObject().put("azure", azure)))
+        } else if (keywords.isNotEmpty()) {
+            body.put("provider", JSONObject().put("options",
+                JSONObject().put("openai", JSONObject().put("keywords", JSONArray(keywords)))))
+        }
         coroutineContext.ensureActive()
         val request = Request.Builder().url("https://openrouter.ai/api/v1/audio/transcriptions")
             .header("Authorization", "Bearer $apiKey").post(body.toString().toRequestBody("application/json".toMediaType())).build()

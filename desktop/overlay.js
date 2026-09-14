@@ -3,8 +3,10 @@ const bars = Array.from({ length: 13 }, () => { const bar = document.createEleme
 const levels = Array(13).fill(0);
 function update(state) {
   const busy = state.mode === 'Busy';
+  const locked = state.mode === 'Locked';
   wave.classList.toggle('busy', busy);
-  document.querySelector('.pill').classList.toggle('locked', state.mode === 'Locked');
+  document.querySelector('.pill').classList.toggle('locked', locked);
+  for (const button of document.querySelectorAll('button')) button.hidden = !locked;
   document.getElementById('finish').disabled = busy;
   levels.shift(); levels.push(Math.min(1, (state.level || 0) * 4));
   if (!busy) bars.forEach((bar, i) => { bar.style.height = `${3 + levels[i] * 20}px`; });

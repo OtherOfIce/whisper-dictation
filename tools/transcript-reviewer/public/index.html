@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Transcript review</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">Local Whisper / corpus review</p>
+      <h1>Transcript review</h1>
+      <p class="privacy"><span class="privacy-dot" aria-hidden="true"></span> Local only. Recordings and notes stay in this browser and on this machine.</p>
+    </div>
+    <div class="header-actions">
+      <button id="importButton" type="button">Import JSON</button>
+      <input id="importInput" type="file" accept="application/json,.json" hidden>
+      <button id="exportJsonButton" type="button">Export JSON</button>
+      <button id="exportMarkdownButton" type="button">Export Markdown</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="sidebar" aria-label="Sample navigation">
+      <div class="sidebar-top">
+        <div class="progress-row"><strong id="progressLabel">Loading samples…</strong><span id="progressPercent"></span></div>
+        <div class="progress-track" aria-hidden="true"><span id="progressBar"></span></div>
+        <p id="seedStatus" class="seed-status" role="status"></p>
+        <label class="search-label" for="searchInput">Find a sample</label>
+        <input id="searchInput" type="search" placeholder="Search id or transcript" autocomplete="off">
+        <div class="filter-row">
+          <label for="statusFilter">Show</label>
+          <select id="statusFilter">
+            <option value="all">All samples</option>
+            <option value="unreviewed">Unreviewed</option>
+            <option value="reviewed">Reviewed</option>
+            <option value="excluded">Excluded</option>
+          </select>
+        </div>
+      </div>
+      <nav id="sampleList" class="sample-list" aria-label="Samples"></nav>
+    </aside>
+
+    <section class="review-pane" aria-label="Current sample review">
+      <div id="emptyState" class="empty-state" hidden>
+        <h2>No sample matches</h2>
+        <p>Try a different search or filter.</p>
+      </div>
+      <div id="reviewContent" hidden>
+        <div class="sample-heading">
+          <div>
+            <p class="eyebrow" id="samplePosition"></p>
+            <h2 id="sampleTitle"></h2>
+          </div>
+          <div class="nav-buttons">
+            <button id="previousButton" type="button" aria-label="Previous sample">← Previous</button>
+            <button id="nextButton" type="button" aria-label="Next sample">Next →</button>
+          </div>
+        </div>
+
+        <div class="audio-card">
+          <audio id="audioPlayer" controls preload="metadata"></audio>
+          <span id="audioMeta" class="muted"></span>
+        </div>
+
+        <div class="comparison-grid">
+          <article class="panel reference-panel">
+            <div class="panel-heading"><h3>Wispr reference</h3><span id="referenceKind" class="tag"></span></div>
+            <label for="provisionalText" class="field-label">Provisional .txt</label>
+            <pre id="provisionalText" class="readout"></pre>
+            <div class="subheading"><h4>Available transcript stages</h4><span class="muted">from .transcripts.json</span></div>
+            <div id="transcriptStages" class="stages"></div>
+          </article>
+
+          <article class="panel model-panel">
+            <div class="panel-heading"><h3>Model outputs</h3><span id="modelCount" class="muted"></span></div>
+            <div id="modelOutputs" class="model-outputs"></div>
+          </article>
+        </div>
+
+        <details class="dictionary-panel panel">
+          <summary>Historical dictionary <span id="dictionaryCount" class="muted"></span></summary>
+          <p id="dictionaryMeta" class="muted"></p>
+          <div id="dictionaryTerms" class="terms"></div>
+        </details>
+
+        <article class="panel decision-panel">
+          <div class="panel-heading"><h3>Review decision</h3><span id="saveStatus" class="muted" role="status"></span></div>
+          <div class="decision-grid">
+            <div class="field canonical-field">
+              <label for="canonicalText">Canonical / intended transcript</label>
+              <textarea id="canonicalText" rows="4" spellcheck="true"></textarea>
+              <p class="hint">Edit this to the wording you want to treat as correct.</p>
+            </div>
+            <div class="decision-controls">
+              <label for="verdict">Verdict</label>
+              <select id="verdict">
+                <option value="">Choose…</option>
+                <option value="accepted">Accepted</option>
+                <option value="needs-edit">Needs edit</option>
+                <option value="rejected">Rejected</option>
+                <option value="unclear">Unclear</option>
+              </select>
+              <label class="check-label"><input id="reviewed" type="checkbox"> Mark reviewed</label>
+              <label class="check-label"><input id="excluded" type="checkbox"> Exclude sample</label>
+              <label for="exclusionReason">Exclusion reason</label>
+              <input id="exclusionReason" type="text" placeholder="Optional reason" disabled>
+            </div>
+          </div>
+          <div class="field"><label for="comment">Reviewer comment</label><textarea id="comment" rows="2" placeholder="What should a future reviewer know?"></textarea></div>
+          <div class="field"><label for="equivalenceNotes">Accepted-equivalence notes</label><textarea id="equivalenceNotes" rows="2" placeholder="Punctuation, casing, or wording variants that count as equivalent"></textarea></div>
+        </article>
+      </div>
+    </section>
+  </main>
+  <footer><span id="datasetStatus">Loading local corpus…</span><span>Review data is saved in localStorage until you export it.</span></footer>
+  <script src="/app.js"></script>
+</body>
+</html>

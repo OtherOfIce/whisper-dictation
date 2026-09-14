@@ -11,6 +11,7 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern nint CallNextHookEx(nint hook, int code, nint message, nint data);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] internal static extern nint GetModuleHandle(string? name);
     [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
+    [DllImport("user32.dll")] internal static extern bool SetForegroundWindow(nint window);
     [DllImport("user32.dll")] internal static extern short GetAsyncKeyState(int key);
     [DllImport("user32.dll")] internal static extern uint GetClipboardSequenceNumber();
     [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint count, Input[] inputs, int size);
@@ -39,6 +40,7 @@ internal sealed class GlobalShortcut : IDisposable
     private readonly HashSet<uint> down = [];
     private readonly HashSet<uint> suppressed = [];
     public event Action<bool>? Changed;
+    public event Action? EscapePressed;
     public GlobalShortcut()
     {
         callback = OnKey;
@@ -51,6 +53,11 @@ internal sealed class GlobalShortcut : IDisposable
         if (code < 0) return Native.CallNextHookEx(hook, code, message, data);
         var key = Marshal.PtrToStructure<Native.KeyEvent>(data);
         if ((key.Flags & 0x10) != 0) return Native.CallNextHookEx(hook, code, message, data);
+        if (key.Key == 0x1B)
+        {
+            if ((key.Flags & 0x80) == 0) EscapePressed?.Invoke();
+            return Native.CallNextHookEx(hook, code, message, data);
+        }
         if (key.Key is not (0xA2 or 0xA3 or 0x5B or 0x5C)) return Native.CallNextHookEx(hook, code, message, data);
         bool was = Chord;
         bool up = (key.Flags & 0x80) != 0;

@@ -9,14 +9,16 @@ public sealed class Gesture
     public const int TapMilliseconds = 250;
     public const int DoubleTapMilliseconds = 350;
     public CaptureMode Mode { get; private set; }
+    public bool LockByDefault { get; set; }
     private long pressedAt;
     private long releasedAt;
+    public Gesture(bool lockByDefault = false) => LockByDefault = lockByDefault;
     public GestureAction Press(long now)
     {
         if (Mode == CaptureMode.Idle)
         {
             pressedAt = now;
-            Mode = CaptureMode.Held;
+            Mode = LockByDefault ? CaptureMode.Locked : CaptureMode.Held;
             return GestureAction.Start;
         }
         if (Mode == CaptureMode.WaitingForTap && now - releasedAt <= DoubleTapMilliseconds)

@@ -24,6 +24,6 @@ const texts = [
 module.exports = {
   metrics,
   history: texts.map((text, i) => ({ id: `demo-${i}`, text, metrics: { ...metrics, started: new Date(Date.now() - i * 3600000).toISOString() } })),
-  settings: { hasKey: true, hasBalanceKey: false, liveChunks: false, dictionaryTerms: [] },
+  settings: { hasKey: true, hasBalanceKey: false, liveChunks: false, lockMode: true, transcriptionModel: 'mai-transcribe-2-clean', cleanupMode: 'off', dictionaryTerms: [] },
   balance: { kind: 'account', remaining: 18.42, usage: 1.5832, usageDaily: .0642, message: 'OpenRouter account balance', updated: new Date().toISOString() }
 };

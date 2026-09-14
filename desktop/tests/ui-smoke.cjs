@@ -31,6 +31,12 @@ exports.run = async ({ main, overlay, app, engineEvent }) => {
   assert.equal(await clipboard.readText(), history[1].text);
   await clipboard.writeText(previousClipboard);
   await evaluate('document.querySelector("[data-view=settings]").click()');
+  assert.equal(await evaluate('document.getElementById("lock-mode").checked'), true);
+  await evaluate('document.getElementById("lock-mode").click()'); await wait(100);
+  assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.lockMode)"), false);
+  await evaluate('document.getElementById("lock-mode").click()'); await wait(100);
+  assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.lockMode)"), true);
+  assert.equal(await evaluate('document.getElementById("transcription-model").value'), 'mai-transcribe-2-clean');
   assert.equal(await evaluate('document.getElementById("cleanup-mode").value'), 'off');
   assert.equal(await evaluate('document.getElementById("dictionary-terms").value'), '');
   await evaluate(`document.getElementById("dictionary-terms").value="Acme Corp\\n  Maya's project  \\n\\nmeeting notes"; document.getElementById("settings-form").requestSubmit(document.querySelector("[type=submit]"))`);
@@ -39,6 +45,14 @@ exports.run = async ({ main, overlay, app, engineEvent }) => {
   await evaluate('document.getElementById("dictionary-terms").value=""; document.getElementById("settings-form").requestSubmit(document.querySelector("[type=submit]"))');
   await wait(100);
   assert.deepEqual(await evaluate("window.whisper.call('initial').then(x => x.settings.dictionaryTerms)"), []);
+  await evaluate('document.getElementById("dictionary-terms").value="Astra\\nExisting term"; document.getElementById("import-wispr").click()'); await wait(100);
+  assert.deepEqual(await evaluate("window.whisper.call('initial').then(x => x.settings.dictionaryTerms)"), ['Astra', 'Existing term', 'Wispr Flow']);
+  assert.equal(await evaluate('document.getElementById("import-wispr-status").textContent'), '1 new term imported. 3 snippets were skipped.');
+  for (const model of ['mai-transcribe-2-verbatim', 'mai-transcribe-2-clean', 'gpt-transcribe']) {
+    await evaluate(`document.getElementById('transcription-model').value=${JSON.stringify(model)}; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))`);
+    await wait(100);
+    assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.transcriptionModel)"), model);
+  }
   for (const mode of ['luna', 'luna-fast', 'off']) {
     await evaluate(`document.getElementById('cleanup-mode').value=${JSON.stringify(mode)}; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))`);
     await wait(100);
@@ -59,7 +73,13 @@ exports.run = async ({ main, overlay, app, engineEvent }) => {
   await fs.writeFile(path.join(directory, 'dictionary.png'), (await main.webContents.capturePage()).toPNG());
   engineEvent({ type: 'state', mode: 'Held', level: .18 }); await wait(200);
   assert(overlay.isVisible());
+  assert.equal(overlay.isFocusable(), true);
+  assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("cancel").hidden'), true);
+  assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("finish").hidden'), true);
   assert.equal(await overlay.webContents.executeJavaScript('document.body.innerText'), '');
+  engineEvent({ type: 'state', mode: 'Locked', level: .18 }); await wait(100);
+  assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("cancel").hidden'), false);
+  assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("finish").hidden'), false);
   await fs.writeFile(path.join(directory, 'overlay.png'), (await overlay.webContents.capturePage()).toPNG());
   engineEvent({ type: 'state', mode: 'Idle', level: 0 }); assert(!overlay.isVisible());
   console.log('PASS: Electron history, balance, search, copy, performance defaults, and text-free active-only overlay');

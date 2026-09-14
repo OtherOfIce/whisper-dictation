@@ -6,3 +6,4 @@
 .settings-panel select{font:inherit;border:1px solid #e4e4db;border-radius:9px;padding:10px 12px;background:white;color:var(--ink);min-width:190px;margin-bottom:12px}.settings-panel select:focus-visible{outline:2px solid #96907a;outline-offset:3px}.word-stats>p{margin-top:12px;font-size:9px}
 
 .settings-panel textarea{display:block;width:100%;resize:vertical;border:1px solid #e4e4db;border-radius:9px;padding:12px;background:white;color:var(--ink);font:12px/1.6 var(--sans)}.settings-panel textarea:focus-visible{outline:2px solid #96907a;outline-offset:3px}
+.dictionary-actions{display:flex;align-items:center;gap:14px;margin-top:14px}.dictionary-actions .secondary-button:hover{background:#f2f2eb;color:#4f5845}.dictionary-actions .small{margin:0}

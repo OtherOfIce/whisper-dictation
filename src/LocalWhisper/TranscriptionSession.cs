@@ -2,7 +2,8 @@ using NAudio.Wave;
 
 namespace LocalWhisper;
 
-internal sealed class TranscriptionSession(HttpClient http, string key, SessionMetrics metrics, CancellationToken token, IReadOnlyList<string>? dictionaryTerms = null)
+internal sealed class TranscriptionSession(HttpClient http, string key, SessionMetrics metrics, CancellationToken token,
+    IReadOnlyList<string>? dictionaryTerms = null, string transcriptionModel = TranscriptionModels.MaiClean)
 {
     private readonly string[] dictionary = dictionaryTerms?.ToArray() ?? [];
     private readonly List<Task<string>> chunks = [];
@@ -38,7 +39,7 @@ internal sealed class TranscriptionSession(HttpClient http, string key, SessionM
                         }
                     }
                     token.ThrowIfCancellationRequested();
-                    var result = await new Transcriber(http).TranscribeAsync(encoded.Bytes, key, token, metrics, prefix, encoded.Format, dictionary).ConfigureAwait(false);
+                    var result = await new Transcriber(http).TranscribeAsync(encoded.Bytes, key, token, metrics, prefix, encoded.Format, dictionary, transcriptionModel).ConfigureAwait(false);
                     Interlocked.Increment(ref completed);
                     return result;
                 }

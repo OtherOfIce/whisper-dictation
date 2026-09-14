@@ -6,9 +6,9 @@ This branch ports Local Whisper onto HeliBoard 4.1. It keeps the current HeliBoa
 
 - Tap the microphone button to start recording, then tap it again to upload the recording and insert the returned transcript at the cursor.
 - Records mono AAC audio in an M4A container with Android `MediaRecorder`.
-- Sends one request to `https://openrouter.ai/api/v1/audio/transcriptions` using `openai/gpt-transcribe`.
+- Sends one request to `https://openrouter.ai/api/v1/audio/transcriptions` using the selected model. MAI-Transcribe-2 Clean is the default.
 - Cancels the HTTP call after 120 seconds and deletes the temporary recording after success, failure, or cancellation.
-- Sends the personal dictionary through `provider.options.openai.keywords`. Input is limited to 1,000 terms, 120 characters per term, and 12,000 characters total.
+- Sends the personal dictionary through the selected provider's recognition-hint field. Input is limited to 1,000 terms, 120 characters per term, and 12,000 characters total.
 - Encrypts the OpenRouter key with an app-owned Android Keystore AES key. Ciphertext stays in credential-protected `noBackupFilesDir`; Android backup is disabled.
 - Keeps the API key in credential-protected storage and makes the keyboard available after the first device unlock following a reboot.
 - Provides microphone permission, API key, language, and personal dictionary controls in the voice settings screen.

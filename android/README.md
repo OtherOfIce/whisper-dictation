@@ -1,6 +1,6 @@
 # Local Whisper Keyboard
 
-Local Whisper Keyboard is a personal Android keyboard based on HeliBoard 4.1. Tap the microphone once to record and again to send compressed audio to OpenRouter's `openai/gpt-transcribe` model. The returned transcript is inserted into the active text field.
+Local Whisper Keyboard is a personal Android keyboard based on HeliBoard 4.1. Tap the microphone once to record and again to send compressed audio to the selected OpenRouter transcription model. MAI-Transcribe-2 Clean is the default. The returned transcript is inserted into the active text field.
 
 The OpenRouter key is encrypted with Android Keystore. Preferred terms can be sent with each transcription. See [ANDROID_NOTES.md](ANDROID_NOTES.md) for implementation details and current limits.
 

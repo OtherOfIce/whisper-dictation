@@ -7,6 +7,7 @@ const { pathToFileURL } = require('node:url');
 const { projectTimings } = require('./model.cjs');
 const { HistoryStore } = require('./history-store.cjs');
 const { getWordStats } = require('./stats.cjs');
+const { readWisprDictionary } = require('./wispr-dictionary.cjs');
 const testMode = process.argv.includes('--ui-test');
 const startupMode = process.argv.includes('--startup');
 app.setName('Local Whisper');
@@ -97,6 +98,19 @@ else {
     win.webContents.session.setPermissionRequestHandler((_, __, callback) => callback(false));
     return win.loadFile(file);
   }
+  function validateDictionaryTerms(terms) {
+    if (!Array.isArray(terms) || terms.length > 1000 || terms.some(term => typeof term !== 'string' || term.length > 120) || terms.join('\n').length > 12000)
+      throw new Error('Invalid dictionary terms. Use up to 1000 terms, 120 characters each, and 12000 characters total.');
+  }
+  function mergeDictionaryTerms(current, imported) {
+    const merged = [], seen = new Set();
+    for (const value of [...current, ...imported]) {
+      const term = value.trim(); if (!term) continue;
+      const key = term.toLocaleLowerCase();
+      if (!seen.has(key)) { seen.add(key); merged.push(term); }
+    }
+    validateDictionaryTerms(merged); return merged;
+  }
   ipcMain.handle('command', async (event, method, params = {}) => {
     const isMain = main && event.sender === main.webContents;
     const isOverlay = overlay && event.sender === overlay.webContents;
@@ -105,17 +119,33 @@ else {
       if (method === 'initial') return { state };
       if (!['cancel', 'finish'].includes(method)) throw new Error('Unknown toolbar action.');
       if (testMode) return null;
-      return send(method);
+      return send(method, method === 'finish' ? { fromOverlay: true } : {});
     }
     switch (method) {
       case 'initial': return { history, settings, balance, state, historyError, stats: getWordStats(history) };
       case 'refreshCredits': return refreshCredits();
+      case 'setLockMode': {
+        if (!params || typeof params.lockMode !== 'boolean') throw new Error('Invalid settings.');
+        settings = testMode ? { ...settings, lockMode: params.lockMode } : await send('setLockMode', params);
+        broadcast({ type: 'settings', settings }); return settings;
+      }
       case 'saveSettings': {
-        if (!params || typeof params.liveChunks !== 'boolean' || ['apiKey', 'balanceKey'].some(k => params[k] != null && (typeof params[k] !== 'string' || params[k].length > 1024))) throw new Error('Invalid settings.');
+        if (!params || typeof params.liveChunks !== 'boolean' || typeof params.lockMode !== 'boolean' || ['apiKey', 'balanceKey'].some(k => params[k] != null && (typeof params[k] !== 'string' || params[k].length > 1024))) throw new Error('Invalid settings.');
+        if (!['gpt-transcribe', 'mai-transcribe-2-verbatim', 'mai-transcribe-2-clean'].includes(params.transcriptionModel)) throw new Error('Invalid transcription model.');
         if (!['off', 'luna', 'luna-fast'].includes(params.cleanupMode)) throw new Error('Invalid cleanup mode.');
-        if (!Array.isArray(params.dictionaryTerms) || params.dictionaryTerms.length > 1000 || params.dictionaryTerms.some(term => typeof term !== 'string' || term.length > 120) || params.dictionaryTerms.join('\n').length > 12000) throw new Error('Invalid dictionary terms. Use up to 1000 terms, 120 characters each, and 12000 characters total.');
-        settings = testMode ? { ...settings, liveChunks: params.liveChunks, cleanupMode: params.cleanupMode, dictionaryTerms: params.dictionaryTerms } : await send('saveSettings', params);
+        validateDictionaryTerms(params.dictionaryTerms);
+        settings = testMode ? { ...settings, liveChunks: params.liveChunks, lockMode: params.lockMode, transcriptionModel: params.transcriptionModel, cleanupMode: params.cleanupMode, dictionaryTerms: params.dictionaryTerms } : await send('saveSettings', params);
         broadcast({ type: 'settings', settings }); refreshCredits(); return settings;
+      }
+      case 'importWisprDictionary': {
+        validateDictionaryTerms(params.dictionaryTerms);
+        const imported = testMode
+          ? { terms: ['Wispr Flow', 'Astra'], skippedSnippets: 3, convertedReplacements: 1 }
+          : readWisprDictionary(path.join(app.getPath('appData'), 'Wispr Flow', 'flow.sqlite'));
+        const before = new Set(params.dictionaryTerms.map(term => term.trim().toLocaleLowerCase()).filter(Boolean)).size;
+        const dictionaryTerms = mergeDictionaryTerms(params.dictionaryTerms, imported.terms);
+        settings = testMode ? { ...settings, dictionaryTerms } : await send('saveDictionary', { dictionaryTerms });
+        return { settings, added: dictionaryTerms.length - before, ...imported };
       }
       case 'copy': {
         const entry = history.find(x => x.id === params.id); if (!entry) throw new Error('Transcript no longer exists.');
@@ -157,7 +187,7 @@ else {
     const webPreferences = { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false };
     main = new BrowserWindow({ width: 1220, height: 820, minWidth: 850, minHeight: 600, frame: false, backgroundColor: '#f5f4f0', show: false, webPreferences });
     main.on('close', event => { if (!quitting) { event.preventDefault(); main.hide(); } });
-    overlay = new BrowserWindow({ width: 192, height: 62, frame: false, transparent: true, resizable: false, focusable: false, skipTaskbar: true, alwaysOnTop: true, show: false, hasShadow: false, webPreferences });
+    overlay = new BrowserWindow({ width: 192, height: 62, frame: false, transparent: true, resizable: false, focusable: true, skipTaskbar: true, alwaysOnTop: true, show: false, hasShadow: false, webPreferences });
     overlay.setAlwaysOnTop(true, 'screen-saver');
     if (testMode) for (const win of [main, overlay]) win.webContents.on('console-message', event => console.log('renderer:', event.message));
     await Promise.all([secure(main, 'index.html'), secure(overlay, 'overlay.html')]);

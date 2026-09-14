@@ -21,7 +21,26 @@ internal static class Settings
     private static readonly string LiveFile = Path.Combine(Folder, "live-chunks.txt");
     public static bool LiveChunks => File.Exists(LiveFile) && File.ReadAllText(LiveFile).Trim() == "true";
     public static void SaveLiveChunks(bool enabled) { Directory.CreateDirectory(Folder); File.WriteAllText(LiveFile, enabled ? "true" : "false"); }
+    private static readonly string LockModeFile = Path.Combine(Folder, "lock-mode.txt");
+    public static bool LockMode => !File.Exists(LockModeFile) || File.ReadAllText(LockModeFile).Trim() == "true";
+    public static void SaveLockMode(bool enabled) { Directory.CreateDirectory(Folder); File.WriteAllText(LockModeFile, enabled ? "true" : "false"); }
     private static readonly string CleanupFile = Path.Combine(Folder, "cleanup-mode.txt");
+    private static readonly string TranscriptionModelFile = Path.Combine(Folder, "transcription-model.txt");
+    public static string TranscriptionModel
+    {
+        get
+        {
+            var model = File.Exists(TranscriptionModelFile) ? File.ReadAllText(TranscriptionModelFile).Trim() : TranscriptionModels.MaiClean;
+            return TranscriptionModels.IsValid(model) ? model : TranscriptionModels.MaiClean;
+        }
+    }
+    public static void SaveTranscriptionModel(string model)
+    {
+        if (!TranscriptionModels.IsValid(model)) throw new InvalidOperationException("Invalid transcription model.");
+        Directory.CreateDirectory(Folder);
+        File.WriteAllText(TranscriptionModelFile + ".tmp", model);
+        File.Move(TranscriptionModelFile + ".tmp", TranscriptionModelFile, true);
+    }
     public static string CleanupMode
     {
         get

@@ -39,7 +39,23 @@ internal static class VocabularyChecks
                 }
                 return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"text\":\"Astra\"}") };
             }));
-            check(await new Transcriber(http).TranscribeAsync([1, 2], "test-only", default, dictionaryTerms: enabled ? terms : []) == "Astra", "Dictionary requests preserve transcription response behavior");
+            check(await new Transcriber(http).TranscribeAsync([1, 2], "test-only", default, dictionaryTerms: enabled ? terms : [], transcriptionModel: TranscriptionModels.Gpt) == "Astra", "GPT dictionary requests preserve transcription response behavior");
+        }
+        foreach (var model in new[] { TranscriptionModels.MaiVerbatim, TranscriptionModels.MaiClean })
+        {
+            using var http = new HttpClient(new Handler(async (request, token) =>
+            {
+                using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+                var root = json.RootElement;
+                check(root.GetProperty("model").GetString() == Transcriber.MaiModel, "MAI choices use the MAI model ID");
+                var azure = root.GetProperty("provider").GetProperty("options").GetProperty("azure");
+                var style = azure.GetProperty("enhancedMode").GetProperty("modelOptions").GetProperty("transcribeStyle").GetString();
+                check(style == (model == TranscriptionModels.MaiClean ? "clean" : "verbatim"), "MAI choices send the selected transcription style");
+                var phrases = azure.GetProperty("phraseList").GetProperty("phrases").EnumerateArray().Select(x => x.GetString());
+                check(phrases.SequenceEqual(terms), "MAI sends dictionary terms through Azure phrase hints");
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"text\":\"Astra\"}") };
+            }));
+            check(await new Transcriber(http).TranscribeAsync([1, 2], "test-only", default, dictionaryTerms: terms, transcriptionModel: model) == "Astra", "MAI requests preserve transcription response behavior");
         }
     }
 }
