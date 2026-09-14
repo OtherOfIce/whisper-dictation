@@ -15,6 +15,7 @@ if (testMode) app.setPath('userData', path.join(app.getPath('temp'), 'local-whis
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 else {
   let main, overlay, tray, engine, quitting = false, state = { mode: 'Idle' }, history = [], historyError = false;
+  const testOverlayActions = [];
   let nextId = 0, settings = {}, balance = null, refreshPromise, saveQueue = Promise.resolve();
   const pending = new Map();
   const historyPath = () => path.join(app.getPath('userData'), 'history.bin');
@@ -51,7 +52,6 @@ else {
     if (event.type === 'state') {
       const wasIdle = state.mode === 'Idle'; state = event;
       const overlayInteractive = event.mode === 'LockMode';
-      overlay.setFocusable(overlayInteractive);
       overlay.setIgnoreMouseEvents(!overlayInteractive);
       if (event.mode === 'Idle') overlay.hide();
       else {
@@ -121,7 +121,7 @@ else {
     if (isOverlay) {
       if (method === 'initial') return { state };
       if (!['cancel', 'finish'].includes(method)) throw new Error('Unknown toolbar action.');
-      if (testMode) return null;
+      if (testMode) { testOverlayActions.push(method); return null; }
       return send(method, method === 'finish' ? { fromOverlay: true } : {});
     }
     switch (method) {
@@ -204,6 +204,6 @@ else {
       setInterval(() => { if (main.isVisible()) { refreshCredits(); broadcast({ type: 'stats', stats: getWordStats(history) }); } }, 60000).unref();
     }
     if (!startupMode) main.show();
-    if (testMode) await require('./tests/ui-smoke.cjs').run({ main, overlay, app, engineEvent });
+    if (testMode) await require('./tests/ui-smoke.cjs').run({ main, overlay, app, engineEvent, testOverlayActions });
   }).catch(error => { if (testMode) console.error(error); app.exit(1); });
 }
