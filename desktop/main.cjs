@@ -50,11 +50,14 @@ else {
     if (event.type === 'ready') { settings = event.settings; refreshCredits(); }
     if (event.type === 'state') {
       const wasIdle = state.mode === 'Idle'; state = event;
+      const overlayInteractive = event.mode === 'LockMode';
+      overlay.setFocusable(overlayInteractive);
+      overlay.setIgnoreMouseEvents(!overlayInteractive);
       if (event.mode === 'Idle') overlay.hide();
       else {
         if (wasIdle) {
           const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
-          overlay.setPosition(Math.round(area.x + (area.width - 192) / 2), area.y + area.height - 76);
+          overlay.setPosition(Math.round(area.x + (area.width - 192) / 2), area.y + area.height - 64);
         }
         if (!overlay.isVisible()) overlay.showInactive();
       }
@@ -187,8 +190,9 @@ else {
     const webPreferences = { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false };
     main = new BrowserWindow({ width: 1220, height: 820, minWidth: 850, minHeight: 600, frame: false, backgroundColor: '#f5f4f0', show: false, webPreferences });
     main.on('close', event => { if (!quitting) { event.preventDefault(); main.hide(); } });
-    overlay = new BrowserWindow({ width: 192, height: 62, frame: false, transparent: true, resizable: false, focusable: true, skipTaskbar: true, alwaysOnTop: true, show: false, hasShadow: false, webPreferences });
+    overlay = new BrowserWindow({ width: 192, height: 56, frame: false, transparent: true, resizable: false, focusable: false, skipTaskbar: true, alwaysOnTop: true, show: false, hasShadow: false, webPreferences });
     overlay.setAlwaysOnTop(true, 'screen-saver');
+    overlay.setIgnoreMouseEvents(true);
     if (testMode) for (const win of [main, overlay]) win.webContents.on('console-message', event => console.log('renderer:', event.message));
     await Promise.all([secure(main, 'index.html'), secure(overlay, 'overlay.html')]);
     if (!testMode) {

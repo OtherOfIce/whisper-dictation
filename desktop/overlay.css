@@ -1,16 +1,12 @@
 *{box-sizing:border-box}
-body{margin:0;overflow:hidden;background:transparent;display:grid;place-items:center;height:62px;font-family:'Segoe UI',sans-serif}
-.pill{width:176px;height:48px;border-radius:26px;background:#111313;border:1px solid #454847;display:flex;align-items:center;justify-content:space-between;padding:7px;box-shadow:0 2px 5px #0003}
-.pill:not(.locked){justify-content:center}
-button{width:33px;height:33px;border-radius:50%;border:0;display:grid;place-items:center;background:#414342;color:#fff;cursor:pointer;padding:0}
-button:last-child{background:#fff;color:#121414}
-button:hover{filter:brightness(1.18)}
-button:disabled{opacity:.4;cursor:default}
-svg{width:25px;height:25px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-.wave{display:flex;align-items:center;gap:3px;height:25px;width:65px;justify-content:center}
-.bar{width:2px;min-height:3px;border-radius:3px;background:#fff;transition:height .09s ease-out}
-.pill.locked{border-color:#8b9984}
-.wave.busy .bar{animation:pulse 1s ease-in-out infinite}
-.wave.busy .bar:nth-child(3n){animation-delay:-.2s}
-.wave.busy .bar:nth-child(3n+1){animation-delay:-.4s}
-@keyframes pulse{0%,100%{height:3px}50%{height:17px}}
+body{margin:0;overflow:hidden;background:transparent;display:grid;place-items:center;width:192px;height:56px}
+.pill{width:132px;height:42px;border-radius:999px;background:#07080a;display:flex;align-items:center;justify-content:center;gap:8px;padding:6px;box-shadow:0 5px 14px #0007;transition:width 120ms ease-out}
+.pill.lock-mode{width:178px}
+.wave{height:22px;display:flex;align-items:center;justify-content:center;gap:4px}
+.bar{width:2px;height:3px;border-radius:999px;background:#f7f7ff;box-shadow:0 0 1px #d9dcff80;will-change:height}
+button{width:30px;height:30px;flex:0 0 30px;border:0;border-radius:50%;display:grid;place-items:center;padding:0;background:#292b2d;color:#f7f7ff;cursor:pointer}
+button:last-child{background:#f7f7ff;color:#08090a}
+button:hover{filter:brightness(1.15)}
+button:focus-visible{outline:2px solid #fff;outline-offset:2px}
+button[hidden]{display:none}
+svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}

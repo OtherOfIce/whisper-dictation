@@ -1,6 +1,6 @@
 namespace LocalWhisper;
 
-public enum CaptureMode { Idle, Held, WaitingForTap, Locked, Busy }
+public enum CaptureMode { Idle, PushToTalk, WaitingForTap, LockMode, Busy }
 public enum GestureAction { None, Start, Finish }
 
 // Caller-supplied time makes double-tap boundaries testable without a keyboard.
@@ -18,18 +18,18 @@ public sealed class Gesture
         if (Mode == CaptureMode.Idle)
         {
             pressedAt = now;
-            Mode = LockByDefault ? CaptureMode.Locked : CaptureMode.Held;
+            Mode = LockByDefault ? CaptureMode.LockMode : CaptureMode.PushToTalk;
             return GestureAction.Start;
         }
         if (Mode == CaptureMode.WaitingForTap && now - releasedAt <= DoubleTapMilliseconds)
-            Mode = CaptureMode.Locked;
-        else if (Mode == CaptureMode.Locked || Mode == CaptureMode.WaitingForTap)
+            Mode = CaptureMode.LockMode;
+        else if (Mode == CaptureMode.LockMode || Mode == CaptureMode.WaitingForTap)
             return Finish();
         return GestureAction.None;
     }
     public GestureAction Release(long now)
     {
-        if (Mode != CaptureMode.Held) return GestureAction.None;
+        if (Mode != CaptureMode.PushToTalk) return GestureAction.None;
         if (now - pressedAt > TapMilliseconds) return Finish();
         releasedAt = now;
         Mode = CaptureMode.WaitingForTap;

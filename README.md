@@ -6,9 +6,9 @@ OpenRouter-powered dictation for Windows and Android. The desktop app uses an El
 
 Run `dist/electron/LocalWhisper-win32-x64/LocalWhisper.exe`. Your existing OpenRouter key is reused automatically.
 
-- Press Ctrl + Win to speak. Recordings start in lock mode by default, so press the shortcut again or click the checkmark to finish.
-- Turn off Start in lock mode in Settings to use hold-to-speak and double-tap locking instead. Escape or the stop button cancels a recording.
-- The floating waveform has no text and only appears while recording or processing.
+- Press Ctrl + Win to speak. Recordings start in lock mode by default, so press the shortcut again to finish.
+- Turn off Default to lock mode in Settings to use push-to-talk mode. Hold Ctrl + Win to speak and release to insert. Double-tap the shortcut to switch that recording to lock mode. Escape discards a recording.
+- A compact waveform appears while the app is recording or transcribing.
 - History is searchable, survives restarts, and supports copying and deleting transcripts.
 - Word counts show total, today, and the last seven local calendar days. Counts use saved history before cleanup, so deleting a transcript removes its words from these totals.
 - Settings lets you choose GPT-Transcribe, MAI-Transcribe-2 Verbatim, or MAI-Transcribe-2 Clean. MAI Clean is the default and removes some fillers and false starts before the optional Luna cleanup stage.
