@@ -169,7 +169,7 @@ internal sealed class EngineApp : ApplicationContext
         var active = session; var trace = metrics; var cancellation = operation; var id = entryId;
         if (capture is null || active is null || trace is null || cancellation is null) { gesture.Reset(); PublishState(); return; }
         recordingStage?.Dispose(); recordingStage = null; trace.Stopped(); PublishState();
-        var outcome = "Failed"; var rawText = ""; var text = "";
+        var outcome = "Failed"; var rawText = ""; var text = ""; byte[]? audio = null;
         try
         {
             byte[] pcm;
@@ -178,6 +178,7 @@ internal sealed class EngineApp : ApplicationContext
                 using (capture)
                 {
                     var tail = await capture.StopPcmAsync().ConfigureAwait(false);
+                    audio = capture.RecordedWav();
                     trace.Audio(capture.Seconds, (long)(capture.Seconds * 32000)); return tail;
                 }
             });
@@ -213,7 +214,7 @@ internal sealed class EngineApp : ApplicationContext
             if (!exiting)
             {
                 PublishState();
-                if (outcome != "Cancelled") Emit(new { type = "transcript", entry = new { id, text, rawText, metrics = trace.Snapshot() } });
+                if (outcome != "Cancelled") Emit(new { type = "transcript", entry = new { id, text, rawText, metrics = trace.Snapshot(), audio = audio is null ? null : Convert.ToBase64String(audio), audioFormat = audio is null ? null : "wav" } });
                 _ = UpdateCompletedMetricsAsync(id, trace);
             }
         }

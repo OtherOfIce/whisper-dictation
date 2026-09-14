@@ -17,8 +17,8 @@ else {
   let main, overlay, tray, engine, quitting = false, state = { mode: 'Idle' }, history = [], historyError = false;
   let nextId = 0, settings = {}, balance = null, refreshPromise, saveQueue = Promise.resolve();
   const pending = new Map();
-  const historyPath = () => path.join(app.getPath('userData'), 'history.bin');
-  const historyStore = new HistoryStore(historyPath(), safeStorage);
+  const historyPath = () => path.join(app.getPath('userData'), 'history.sqlite');
+  const historyStore = new HistoryStore(historyPath(), safeStorage, path.join(app.getPath('userData'), 'history.bin'));
   const broadcast = value => { for (const win of [main, overlay]) if (win && !win.isDestroyed()) win.webContents.send('event', value); };
   function send(method, params = {}) {
     return new Promise((resolve, reject) => {
@@ -39,7 +39,12 @@ else {
     broadcast({ type: 'notice', message });
     if (!testMode && !main?.isFocused()) new Notification({ title: 'Local Whisper', body: message }).show();
   }
-  function persist() { saveHistory().catch(() => notify('Could not save history. Your current transcripts are still available in this window.')); }
+  function persist(audioById) {
+    if (testMode) return;
+    if (historyError) { notify('Could not save history. Your current transcripts are still available in this window.'); return; }
+    saveQueue = historyStore.write(history, audioById);
+    saveQueue.catch(() => notify('Could not save history. Your current transcripts are still available in this window.'));
+  }
   function showMain(view = 'history') { main.show(); main.focus(); broadcast({ type: 'navigate', view }); }
   function engineEvent(event) {
     if (event.type === 'reply') {
@@ -59,7 +64,15 @@ else {
         if (!overlay.isVisible()) overlay.showInactive();
       }
     }
-    if (event.type === 'transcript') { history.unshift(event.entry); persist(); refreshCredits(); broadcast({ type: 'stats', stats: getWordStats(history) }); }
+    if (event.type === 'transcript') {
+      const { audio, audioFormat, ...rest } = event.entry;
+      const recording = typeof audio === 'string' ? Buffer.from(audio, 'base64') : null;
+      const entry = { ...rest, hasAudio: recording !== null };
+      history.unshift(entry);
+      persist(recording ? new Map([[entry.id, { bytes: recording, format: audioFormat || 'wav' }]]) : undefined);
+      refreshCredits(); broadcast({ type: 'stats', stats: getWordStats(history) });
+      event = { ...event, entry };
+    }
     if (event.type === 'metricsUpdated') {
       const entry = history.find(x => x.id === event.id);
       if (entry) { entry.metrics = event.metrics; persist(); }
@@ -150,6 +163,23 @@ else {
       case 'copy': {
         const entry = history.find(x => x.id === params.id); if (!entry) throw new Error('Transcript no longer exists.');
         await clipboard.writeText(entry.text); return true;
+      }
+      case 'audio': {
+        const entry = history.find(x => x.id === params.id); if (!entry) throw new Error('Transcript no longer exists.');
+        if (!entry.hasAudio) throw new Error('This transcript has no saved recording.');
+        const recording = await historyStore.readAudio(entry.id);
+        if (!recording) throw new Error('The saved recording could not be found.');
+        return { bytes: recording.bytes, format: recording.format };
+      }
+      case 'downloadAudio': {
+        const entry = history.find(x => x.id === params.id); if (!entry) throw new Error('Transcript no longer exists.');
+        if (!entry.hasAudio) throw new Error('This transcript has no saved recording.');
+        const recording = await historyStore.readAudio(entry.id);
+        if (!recording) throw new Error('The saved recording could not be found.');
+        const stamp = new Date(entry.metrics.started).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+        const result = await dialog.showSaveDialog(main, { defaultPath: `recording-${stamp}.wav`, filters: [{ name: 'WAV audio', extensions: ['wav'] }] });
+        if (result.canceled) return false;
+        await fs.writeFile(result.filePath, recording.bytes); return true;
       }
       case 'delete': history = history.filter(x => x.id !== params.id); await saveHistory(); broadcast({ type: 'history', history }); broadcast({ type: 'stats', stats: getWordStats(history) }); return true;
       case 'timings': {

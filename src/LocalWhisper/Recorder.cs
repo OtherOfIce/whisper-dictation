@@ -6,6 +6,7 @@ internal sealed class Recorder : IDisposable
 {
     private readonly WaveInEvent input = new() { DeviceNumber = -1, WaveFormat = new WaveFormat(16000, 16, 1), BufferMilliseconds = 40 };
     private readonly PauseChunks buffer = new();
+    private readonly MemoryStream recording = new();
     private long totalBytes;
     private readonly bool live;
     public event Action<byte[]>? ChunkReady;
@@ -28,6 +29,7 @@ internal sealed class Recorder : IDisposable
                 // Five-minute memory bound, including when the UI thread is busy.
                 var count = (int)Math.Min(e.BytesRecorded, Math.Max(0, 32000L * 300 - totalBytes));
                 totalBytes += count;
+                recording.Write(e.Buffer, 0, count);
                 float peak = 0;
                 for (var i = 0; i + 1 < count; i += 2)
                     peak = Math.Max(peak, Math.Abs(BitConverter.ToInt16(e.Buffer, i) / 32768f));
@@ -51,7 +53,13 @@ internal sealed class Recorder : IDisposable
     }
     public async Task<byte[]> StopAsync()
     {
-        var pcm = await StopPcmAsync();
+        await StopPcmAsync();
+        return RecordedWav();
+    }
+    public byte[] RecordedWav()
+    {
+        byte[] pcm;
+        lock (gate) pcm = recording.ToArray();
         using var wav = new MemoryStream();
         using (var writer = new WaveFileWriter(new NAudio.Utils.IgnoreDisposeStream(wav), input.WaveFormat))
         {
@@ -62,6 +70,6 @@ internal sealed class Recorder : IDisposable
     public void Dispose()
     {
         input.Dispose();
-        lock (gate) { disposed = true; buffer.Drain(); }
+        lock (gate) { disposed = true; buffer.Drain(); recording.Dispose(); }
     }
 }

@@ -4,6 +4,8 @@ const icons = {
   settings: '<path d="m9 3-1 3-3 1-2 3 2 2-1 3 3 2 3-1 2 2 3-1 1-3 3-1 1-3-2-2V5l-3-1-2 1z"/><circle cx="11.5" cy="10.5" r="3"/>',
   search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/>',
   copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 5V3H3v14h2"/>',
+  play: '<path d="m8 5 11 7-11 7z"/>',
+  pause: '<path d="M8 5v14m8-14v14"/>',
   chart: '<path d="M4 3v17h17M8 15v-4m5 4V6m5 9v-6"/>',
   trash: '<path d="M4 6h16M9 3h6m-9 3 1 15h10l1-15M10 10v7m4-7v7"/>',
   refresh: '<path d="M20 10a8 8 0 0 0-14-4L3 9m0-6v6h6m-5 5a8 8 0 0 0 14 4l3-3m0 6v-6h-6"/>',
@@ -17,6 +19,7 @@ document.querySelectorAll('[data-icon]').forEach(node => node.replaceWith(icon(n
 const $ = id => document.getElementById(id);
 const call = (method, params) => window.whisper.call(method, params);
 let history = [], selectedId = null, pageSize = 100, toastTimer, latestBalance;
+let activeAudio = null, activeAudioId = null, activeAudioButton = null, activeAudioUrl = null;
 function renderWordStats(stats) {
   if (!stats) return;
   $('words-total').textContent = Number(stats.total || 0).toLocaleString();
@@ -25,6 +28,7 @@ function renderWordStats(stats) {
 }
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4500); }
 function navigate(view) {
+  if (view !== 'history') stopAudio();
   $('history-view').hidden = view !== 'history'; $('settings-view').hidden = view !== 'settings';
   document.querySelectorAll('[data-view]').forEach(button => button.classList.toggle('selected', button.dataset.view === view));
   closeDrawer();
@@ -33,6 +37,26 @@ document.querySelectorAll('[data-view]').forEach(button => button.onclick = () =
 document.querySelectorAll('[data-window]').forEach(button => button.onclick = () => call(button.dataset.window).catch(error => toast(error.message)));
 function action(name, title, handler) {
   const button = document.createElement('button'); button.title = title; button.setAttribute('aria-label', title); button.append(icon(name)); button.onclick = handler; return button;
+}
+function setActionIcon(button, name) { button.replaceChildren(icon(name)); }
+function stopAudio() {
+  activeAudio?.pause();
+  if (activeAudioButton) setActionIcon(activeAudioButton, 'play');
+  if (activeAudioUrl) URL.revokeObjectURL(activeAudioUrl);
+  activeAudio = null; activeAudioId = null; activeAudioButton = null; activeAudioUrl = null;
+}
+async function toggleAudio(entry, button) {
+  if (activeAudioId === entry.id) { stopAudio(); return; }
+  stopAudio(); button.disabled = true;
+  try {
+    const recording = await call('audio', { id: entry.id });
+    const bytes = recording.bytes instanceof Uint8Array ? recording.bytes : new Uint8Array(recording.bytes);
+    activeAudioUrl = URL.createObjectURL(new Blob([bytes], { type: `audio/${recording.format || 'wav'}` }));
+    activeAudio = new Audio(activeAudioUrl); activeAudioId = entry.id; activeAudioButton = button;
+    activeAudio.onended = stopAudio; activeAudio.onerror = () => { stopAudio(); toast('Could not play this recording.'); };
+    setActionIcon(button, 'pause'); await activeAudio.play();
+  } catch (error) { stopAudio(); toast(error.message); }
+  finally { button.disabled = false; }
 }
 function renderHistory() {
   const query = $('search').value.toLocaleLowerCase();
@@ -52,9 +76,13 @@ function renderHistory() {
     const text = document.createElement('div'); text.className = 'transcript-text'; text.textContent = entry.text || entry.metrics.outcome;
     if (!entry.text) text.classList.add('empty');
     const actions = document.createElement('div'); actions.className = 'transcript-actions';
+    const play = action('play', entry.hasAudio ? 'Play audio' : 'No saved audio', () => toggleAudio(entry, play));
+    const download = action('download', entry.hasAudio ? 'Download audio' : 'No saved audio', () => call('downloadAudio', { id: entry.id }).then(saved => { if (saved) toast('Recording downloaded'); }).catch(error => toast(error.message)));
+    play.disabled = download.disabled = !entry.hasAudio;
     const copy = action('copy', 'Copy transcript', () => call('copy', { id: entry.id }).then(() => toast('Transcript copied')).catch(error => toast(error.message)));
     copy.disabled = !entry.text;
-    actions.append(copy, action('chart', 'Show performance', () => openPerformance(entry.id)), action('trash', 'Delete transcript', async () => {
+    actions.append(play, download, copy, action('chart', 'Show performance', () => openPerformance(entry.id)), action('trash', 'Delete transcript', async () => {
+      if (activeAudioId === entry.id) stopAudio();
       try { await call('delete', { id: entry.id }); toast('Transcript deleted'); } catch (error) { toast(error.message); }
     }));
     article.append(time, text, actions); group.append(article);
