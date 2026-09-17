@@ -39,4 +39,35 @@ function getWordStats(history, now = new Date()) {
   return { total, today, last7Days };
 }
 
-module.exports = { countWords, getWordStats };
+function summarizeCosts(rows) {
+  const models = new Map();
+  let voice = 0, cleanup = 0, voiceCount = 0, cleanupCount = 0;
+  for (const cost of rows) {
+    if (!cost || !['voice', 'cleanup'].includes(cost.category) || typeof cost.model !== 'string' || !Number.isFinite(cost.amount) || cost.amount < 0) continue;
+    if (cost.category === 'voice') { voice += cost.amount; voiceCount++; }
+    else { cleanup += cost.amount; cleanupCount++; }
+    const key = `${cost.category}\0${cost.model}`;
+    const current = models.get(key) || { category: cost.category, model: cost.model, amount: 0 };
+    current.amount += cost.amount; models.set(key, current);
+  }
+  return { voice, cleanup, voiceCount, cleanupCount, models: [...models.values()].sort((a, b) => a.category.localeCompare(b.category) || b.amount - a.amount) };
+}
+
+function getCostStats(history, since = null) {
+  const rows = [];
+  for (const entry of Array.isArray(history) ? history : []) {
+    if (since && new Date(entry?.metrics?.started) < since) continue;
+    rows.push(...(Array.isArray(entry?.metrics?.costs) ? entry.metrics.costs : []));
+  }
+  return summarizeCosts(rows);
+}
+
+function getDisplayedCostStats(history, balance, now = new Date()) {
+  if (!Array.isArray(balance?.costs)) return { ...getCostStats(history), source: 'history' };
+  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const remote = balance.costs;
+  const localToday = getCostStats(history, today).models;
+  return { ...summarizeCosts([...remote, ...localToday]), source: 'activity', through: balance.costsThrough };
+}
+
+module.exports = { countWords, getWordStats, getCostStats, getDisplayedCostStats };

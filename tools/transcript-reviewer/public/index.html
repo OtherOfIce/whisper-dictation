@@ -64,6 +64,16 @@
           <span id="audioMeta" class="muted"></span>
         </div>
 
+        <article id="candidatePanel" class="panel candidate-panel" hidden>
+          <div class="panel-heading"><h3>Benchmark candidate</h3><span id="candidateCategory" class="tag"></span></div>
+          <div class="context-grid">
+            <div><span class="stage-label">Before cursor</span><pre id="contextBefore" class="readout context-text"></pre></div>
+            <div><span class="stage-label">Selected text</span><pre id="contextSelected" class="readout context-text"></pre></div>
+            <div><span class="stage-label">After cursor</span><pre id="contextAfter" class="readout context-text"></pre></div>
+          </div>
+          <p id="candidateEvidence" class="muted candidate-evidence"></p>
+        </article>
+
         <div class="comparison-grid">
           <article class="panel reference-panel">
             <div class="panel-heading"><h3>Wispr reference</h3><span id="referenceKind" class="tag"></span></div>

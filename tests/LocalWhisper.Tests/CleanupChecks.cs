@@ -6,6 +6,74 @@ internal static class CleanupChecks
 {
     public static async Task RunAsync(Action<bool, string> check)
     {
+        using (var contextualHttp = new HttpClient(new Handler(async (request, cancellation) =>
+        {
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellation));
+            var content = body.RootElement.GetProperty("messages")[1].GetProperty("content").GetString()!;
+            using var input = JsonDocument.Parse(content);
+            var root = input.RootElement;
+            check(root.GetProperty("dictation").GetString() == "Bat.", "Cleanup labels dictated text separately from context");
+            check(root.GetProperty("insertionContext").GetProperty("beforeText").GetString() == "The animal was a ", "Cleanup sends text before the cursor");
+            check(root.GetProperty("insertionContext").GetProperty("selectedText").GetString() == "cat", "Cleanup sends selected text");
+            check(root.GetProperty("insertionContext").GetProperty("afterText").GetString() == ", just as an example.", "Cleanup sends text after the cursor");
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"choices\":[{\"message\":{\"content\":\"bat\"}}]}")
+            };
+        })))
+        {
+            var context = new InsertionContext("The animal was a ", "cat", ", just as an example.");
+            var result = await new CleanupService(contextualHttp).CleanupAsync("Bat.", context, "test-only", CleanupServiceTier.Standard, default);
+            check(result.Text == "bat", "Cleanup returns only the context-fitted insertion");
+        }
+
+        using (var leakingContext = new HttpClient(new Handler((_, _) => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"choices\":[{\"message\":{\"content\":\"The animal was a bat\"}}]}")
+            }))))
+        {
+            try
+            {
+                await new CleanupService(leakingContext).CleanupAsync("Bat.",
+                    new InsertionContext("The animal was a ", "cat", ", just as an example."),
+                    "test-only", CleanupServiceTier.Standard, default);
+                throw new Exception("Expected repeated context to fail");
+            }
+            catch (InvalidDataException) { check(true, "Cleanup rejects output that repeats surrounding context"); }
+        }
+
+        check(InsertionFitter.Fit("Bat.", new InsertionContext("The animal was a ", "cat", ", just as an example.")) == "bat",
+            "Cleanup fits replacement casing and punctuation to selected text");
+        check(InsertionFitter.Fit("then we should deploy the update.", new InsertionContext("The tests passed. ", "", "")) == "Then we should deploy the update.",
+            "Cleanup capitalizes an insertion after a completed sentence");
+        check(InsertionFitter.Fit("London", new InsertionContext("We travelled to ", "Paris", ".")) == "London",
+            "Cleanup preserves replacement capitalization when selected text is capitalized");
+
+        using (var alternateHttp = new HttpClient(new Handler(async (request, cancellation) =>
+        {
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellation));
+            var root = body.RootElement;
+            check(root.GetProperty("model").GetString() == "openai/gpt-oss-120b", "Cleanup can select an evaluation model");
+            check(root.GetProperty("reasoning_effort").GetString() == "low", "Cleanup can select an evaluation reasoning effort");
+            check(root.GetProperty("provider").GetProperty("only")[0].GetString() == "cerebras", "Cleanup can pin an evaluation provider");
+            check(!root.GetProperty("provider").GetProperty("allow_fallbacks").GetBoolean(), "Pinned evaluation requests disable provider fallback");
+            check(!root.TryGetProperty("service_tier", out _), "Alternate model requests omit Luna service tiers");
+            check(root.GetProperty("messages")[0].GetProperty("content").GetString() == "Evaluation cleanup prompt.",
+                "Cleanup can select an evaluation prompt");
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"choices\":[{\"message\":{\"content\":\"Clean text.\"}}],\"model\":\"openai/gpt-oss-120b\"}")
+            };
+        })))
+        {
+            var profile = new CleanupRequestProfile("openai/gpt-oss-120b", "low", "cerebras", SendServiceTier: false,
+                Prompt: "Evaluation cleanup prompt.");
+            var result = await new CleanupService(alternateHttp).CleanupAsync("Clean text.", null, "test-only",
+                CleanupServiceTier.Standard, profile, default);
+            check(result.Model == "openai/gpt-oss-120b", "Cleanup reports the selected evaluation model");
+        }
+
         foreach (var tier in new[] { CleanupServiceTier.Standard, CleanupServiceTier.Fast })
         {
             using var http = new HttpClient(new Handler(async (request, cancellation) =>

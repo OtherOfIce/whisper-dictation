@@ -3,14 +3,16 @@ using System.Diagnostics;
 namespace LocalWhisper;
 
 public sealed record TimingRow(string Name, double StartMs, double DurationMs, bool Running);
+public sealed record CostRow(string Category, string Model, decimal Amount);
 public sealed record MetricsSnapshot(DateTime Started, string Outcome, double AudioSeconds, long AudioBytes, long RequestBytes,
-    double ElapsedMs, double? StopMs, double? PasteMs, double MaxUiGapMs, TimingRow[] Rows);
+    double ElapsedMs, double? StopMs, double? PasteMs, double MaxUiGapMs, TimingRow[] Rows, CostRow[] Costs);
 
 public sealed class SessionMetrics
 {
     private readonly Stopwatch watch = Stopwatch.StartNew();
     private readonly object gate = new();
     private readonly List<Stage> stages = [];
+    private readonly List<CostRow> costs = [];
     private readonly DateTime started = DateTime.Now;
     private double? stopMs, pasteMs;
     private double audioSeconds, maxUiGap;
@@ -27,6 +29,11 @@ public sealed class SessionMetrics
     }
     public void Audio(double seconds, long bytes) { lock (gate) { audioSeconds = seconds; audioBytes = bytes; } }
     public void RequestSize(long bytes) { lock (gate) requestBytes += bytes; }
+    public void Cost(string category, string model, decimal? amount)
+    {
+        if (amount is not { } value || value < 0) return;
+        lock (gate) costs.Add(new(category, model, value));
+    }
     public void Stopped() { lock (gate) { stopMs ??= ElapsedMs; outcome = "Transcribing"; } }
     public void Pasted() { lock (gate) pasteMs = ElapsedMs; }
     public void UiGap(double ms) { lock (gate) maxUiGap = Math.Max(maxUiGap, ms); }
@@ -35,7 +42,7 @@ public sealed class SessionMetrics
     {
         lock (gate) return new(started, outcome, audioSeconds, audioBytes, requestBytes,
             Math.Max(finishedMs ?? ElapsedMs, stages.Count == 0 ? 0 : stages.Max(s => s.End ?? ElapsedMs)), stopMs, pasteMs, maxUiGap,
-            stages.Select(s => new TimingRow(s.Name, s.Start, (s.End ?? ElapsedMs) - s.Start, s.End is null)).ToArray());
+            stages.Select(s => new TimingRow(s.Name, s.Start, (s.End ?? ElapsedMs) - s.Start, s.End is null)).ToArray(), costs.ToArray());
     }
     private sealed class Stage(SessionMetrics owner, string name, double start) : IDisposable
     {

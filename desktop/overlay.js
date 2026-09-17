@@ -13,6 +13,8 @@ function update(state) {
   const lockMode = state.mode === 'LockMode';
   pill.classList.toggle('busy', busy);
   pill.classList.toggle('lock-mode', lockMode);
+  wave.classList.toggle('transcribing', busy && state.phase === 'transcribing');
+  wave.classList.toggle('luna', busy && state.phase === 'luna');
   pill.setAttribute('aria-label', busy ? 'Transcribing' : 'Recording');
   cancel.hidden = !lockMode;
   finish.hidden = !lockMode;

@@ -4,20 +4,73 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using LocalWhisper;
 
-var inputPath = Argument(args, "--input") ?? "artifacts/transcribe-eval-gpt-transcribe.json";
-var outputPath = Argument(args, "--output") ?? "artifacts/luna-wispr-eval.json";
-if (!File.Exists(inputPath))
+var inputPath = Argument(args, "--input");
+var sourcePath = Argument(args, "--source");
+var contextSourcePath = Argument(args, "--context-source");
+var sampleId = Argument(args, "--sample");
+var model = Argument(args, "--model") ?? CleanupService.Model;
+var provider = Argument(args, "--provider");
+var reasoningEffort = Argument(args, "--reasoning-effort") ?? (model == CleanupService.Model ? "none" : "low");
+var minimumCompletionTokens = IntArgument(args, "--minimum-completion-tokens") ?? 0;
+var promptSetPath = Argument(args, "--prompt-set");
+var promptId = Argument(args, "--prompt-id");
+if ((promptSetPath is null) != (promptId is null))
 {
-    Console.Error.WriteLine($"Input report does not exist: {Path.GetFullPath(inputPath)}");
+    Console.Error.WriteLine("Pass --prompt-set and --prompt-id together.");
     return 2;
 }
+var selectedPrompt = promptSetPath is null ? CleanupService.Prompt : LoadPrompt(promptSetPath, promptId!);
+var outputPath = Argument(args, "--output") ?? "artifacts/luna-wispr-eval.json";
+var tierOption = (Argument(args, "--tier") ?? "both").ToLowerInvariant();
+if (tierOption is not ("standard" or "fast" or "both"))
+{
+    Console.Error.WriteLine("--tier must be standard, fast, or both.");
+    return 2;
+}
+if (inputPath is not null && sourcePath is not null)
+{
+    Console.Error.WriteLine("Pass either --input or --source, not both.");
+    return 2;
+}
+inputPath ??= sourcePath is null ? "artifacts/transcribe-eval-gpt-transcribe.json" : null;
 
-var source = JsonSerializer.Deserialize<TranscribeReport>(await File.ReadAllTextAsync(inputPath),
-    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+TranscribeReport? source;
+string warning;
+if (sourcePath is not null)
+{
+    if (!Directory.Exists(sourcePath))
+    {
+        Console.Error.WriteLine($"Review corpus does not exist: {Path.GetFullPath(sourcePath)}");
+        return 2;
+    }
+    source = LoadReviewCorpus(sourcePath);
+    warning = "References are audio-reviewed canonicals. Luna input is saved Wispr asrText; this is a cleanup-only benchmark.";
+}
+else
+{
+    if (!File.Exists(inputPath))
+    {
+        Console.Error.WriteLine($"Input report does not exist: {Path.GetFullPath(inputPath!)}");
+        return 2;
+    }
+    source = JsonSerializer.Deserialize<TranscribeReport>(await File.ReadAllTextAsync(inputPath!),
+        new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    if (source is not null && contextSourcePath is not null) source = AttachContexts(source, contextSourcePath);
+    warning = "References come from the input transcription report. Sequential pipeline figures combine measurements from separate benchmark runs.";
+}
 if (source?.Results is null || source.Results.Count == 0)
 {
     Console.Error.WriteLine("Input report has no transcription results.");
     return 2;
+}
+if (sampleId is not null)
+{
+    source = new TranscribeReport(source.Results.Where(result => result.Id.Equals(sampleId, StringComparison.OrdinalIgnoreCase)).ToList());
+    if (source.Results.Count == 0)
+    {
+        Console.Error.WriteLine($"Sample was not found in the input report: {sampleId}");
+        return 2;
+    }
 }
 
 var key = Settings.LoadKey();
@@ -30,26 +83,36 @@ if (string.IsNullOrWhiteSpace(key))
 using var capture = new ResponseCaptureHandler(new HttpClientHandler());
 using var http = new HttpClient(capture) { Timeout = Timeout.InfiniteTimeSpan };
 var cleanup = new CleanupService(http);
+var profile = new CleanupRequestProfile(model, reasoningEffort, provider, SendServiceTier: model == CleanupService.Model,
+    MinimumCompletionTokens: minimumCompletionTokens, Prompt: selectedPrompt);
 var fullOutput = Path.GetFullPath(outputPath);
 Directory.CreateDirectory(Path.GetDirectoryName(fullOutput)!);
 var previous = File.Exists(fullOutput)
     ? JsonSerializer.Deserialize<CleanupReport>(await File.ReadAllTextAsync(fullOutput),
         new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
     : null;
-var runs = previous?.Model == CleanupService.Model && previous.Prompt == CleanupService.Prompt
+var runs = previous?.Model == model && previous.Provider == provider && previous.ReasoningEffort == reasoningEffort && previous.Prompt == selectedPrompt
     ? previous.Runs
     : new List<CleanupRun>();
+var tiers = tierOption switch
+{
+    "standard" => new[] { CleanupServiceTier.Standard },
+    "fast" => new[] { CleanupServiceTier.Fast },
+    _ => new[] { CleanupServiceTier.Standard, CleanupServiceTier.Fast }
+};
+var tierNames = tiers.Select(tier => tier.ToString()).ToArray();
 
-Console.WriteLine($"Wispr cleanup eval: {source.Results.Count} saved transcripts, paired Standard/Fast");
-Console.WriteLine("Each tier is called once per transcript. The saved key is never printed or written.");
+Console.WriteLine($"Wispr cleanup eval: {source.Results.Count} saved transcripts, tiers={string.Join(',', tierNames)}, model={model}, provider={provider ?? "automatic"}, reasoning={reasoningEffort}, prompt={promptId ?? "production"}");
+Console.WriteLine("Each selected tier is called once per transcript. The saved key is never printed or written.");
 
 for (var index = 0; index < source.Results.Count; index++)
 {
     var sample = source.Results[index];
     var rawDistance = WordDistance(sample.Reference, sample.Transcript);
-    var order = index % 2 == 0
+    var pairedOrder = index % 2 == 0
         ? new[] { CleanupServiceTier.Standard, CleanupServiceTier.Fast }
         : new[] { CleanupServiceTier.Fast, CleanupServiceTier.Standard };
+    var order = pairedOrder.Where(tiers.Contains).ToArray();
 
     foreach (var tier in order)
     {
@@ -62,49 +125,97 @@ for (var index = 0; index < source.Results.Count; index++)
         var watch = Stopwatch.StartNew();
         try
         {
-            var result = await cleanup.CleanupAsync(sample.Transcript, key, tier, default);
+            var result = await cleanup.CleanupAsync(sample.Transcript, sample.Context, key, tier, profile, default);
             watch.Stop();
             var cleanedDistance = WordDistance(sample.Reference, result.Text);
             var rawTier = capture.ServiceTier;
-            var requestedTier = tier == CleanupServiceTier.Fast ? "priority" : "default";
+            var requestedTier = profile.SendServiceTier ? tier == CleanupServiceTier.Fast ? "priority" : "default" : "unspecified";
             runs.Add(new CleanupRun(sample.Id, tier.ToString(), requestedTier, rawTier,
-                rawTier == requestedTier, watch.Elapsed.TotalMilliseconds, sample.AudioSeconds,
+                !profile.SendServiceTier || rawTier == requestedTier, watch.Elapsed.TotalMilliseconds, sample.AudioSeconds,
                 sample.EncodeMs, sample.RequestMs, sample.ReportedCost, sample.Reference,
                 sample.Transcript, result.Text, rawDistance, cleanedDistance, result.InputTokens,
                 result.OutputTokens, result.ReasoningTokens, capture.Cost ?? result.Cost, null));
-            await SaveReportAsync(fullOutput, runs);
+            await SaveReportAsync(fullOutput, warning, model, provider, reasoningEffort, selectedPrompt, tierNames, runs);
             Console.WriteLine($"{sample.Id,2} {tier,-8} {watch.Elapsed.TotalMilliseconds,5:F0}ms tier={(rawTier ?? "absent"),-8} raw={rawDistance.ErrorRate,6:P1} clean={cleanedDistance.ErrorRate,6:P1} cost={Money(capture.Cost ?? result.Cost)}");
         }
         catch (Exception error)
         {
             watch.Stop();
-            runs.Add(new CleanupRun(sample.Id, tier.ToString(), tier == CleanupServiceTier.Fast ? "priority" : "default",
+            runs.Add(new CleanupRun(sample.Id, tier.ToString(), profile.SendServiceTier ? tier == CleanupServiceTier.Fast ? "priority" : "default" : "unspecified",
                 capture.ServiceTier, false, watch.Elapsed.TotalMilliseconds, sample.AudioSeconds,
                 sample.EncodeMs, sample.RequestMs, sample.ReportedCost, sample.Reference,
                 sample.Transcript, null, rawDistance, null, 0, 0, 0, capture.Cost,
                 $"{error.GetType().Name}: {error.Message}"));
-            await SaveReportAsync(fullOutput, runs);
+            await SaveReportAsync(fullOutput, warning, model, provider, reasoningEffort, selectedPrompt, tierNames, runs);
             Console.WriteLine($"{sample.Id,2} {tier,-8} ERROR {error.Message}");
         }
     }
 }
 
-var summaries = new[] { "Standard", "Fast" }.Select(tier => Summarize(tier, runs)).ToArray();
+var summaries = tierNames.Select(tier => Summarize(tier, runs)).ToArray();
 foreach (var summary in summaries)
 {
     Console.WriteLine($"{summary.Tier,-8} success={summary.Successful}/{summary.Samples} median={summary.MedianCleanupMs:F0}ms mean={summary.MeanCleanupMs:F0}ms raw-WER={summary.RawMicroWer:P1} clean-WER={summary.CleanMicroWer:P1} cost={Money(summary.CleanupCost)} tier-confirmed={summary.TierConfirmed}/{summary.Successful} sequential-pipeline={summary.MedianSequentialPipelineMs:F0}ms combined-cost={Money(summary.CombinedCost)}");
 }
 
-await SaveReportAsync(fullOutput, runs);
+await SaveReportAsync(fullOutput, warning, model, provider, reasoningEffort, selectedPrompt, tierNames, runs);
 Console.WriteLine($"Private report: {fullOutput}");
 return runs.Any(run => run.Error is not null) ? 1 : 0;
 
-static async Task SaveReportAsync(string path, List<CleanupRun> runs)
+static async Task SaveReportAsync(string path, string warning, string model, string? provider, string reasoningEffort,
+    string prompt, string[] tiers, List<CleanupRun> runs)
 {
-    var report = new CleanupReport(DateTimeOffset.Now, CleanupService.Model,
-        "Wispr Flow references are edited outputs, not verbatim ground truth. Sequential pipeline figures combine measurements from separate benchmark runs.",
-        CleanupService.Prompt, new[] { "Standard", "Fast" }.Select(tier => Summarize(tier, runs)).ToArray(), runs);
+    var report = new CleanupReport(DateTimeOffset.Now, model,
+        warning, prompt, tiers.Select(tier => Summarize(tier, runs)).ToArray(), runs, provider, reasoningEffort);
     await File.WriteAllTextAsync(path, JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
+}
+
+static TranscribeReport LoadReviewCorpus(string sourcePath)
+{
+    var manifestPath = Path.Combine(sourcePath, "manifest.json");
+    var durations = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+    if (File.Exists(manifestPath))
+    {
+        using var manifest = JsonDocument.Parse(File.ReadAllBytes(manifestPath));
+        if (manifest.RootElement.TryGetProperty("samples", out var samples) && samples.ValueKind == JsonValueKind.Array)
+            foreach (var sample in samples.EnumerateArray())
+            {
+                if (!sample.TryGetProperty("id", out var id) || id.ValueKind != JsonValueKind.String) continue;
+                var duration = sample.TryGetProperty("durationSeconds", out var seconds) && seconds.TryGetDouble(out var number) ? number : 0;
+                durations[id.GetString()!] = duration;
+            }
+    }
+
+    var results = new List<TranscribeSample>();
+    foreach (var reviewedPath in Directory.GetFiles(sourcePath, "*.reviewed.txt").Order(StringComparer.OrdinalIgnoreCase))
+    {
+        var id = Path.GetFileName(reviewedPath)[..^".reviewed.txt".Length];
+        var transcriptPath = Path.Combine(sourcePath, $"{id}.transcripts.json");
+        if (!File.Exists(transcriptPath)) continue;
+        using var transcripts = JsonDocument.Parse(File.ReadAllBytes(transcriptPath));
+        if (!transcripts.RootElement.TryGetProperty("asrText", out var asr) || asr.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(asr.GetString())) continue;
+        var reference = File.ReadAllText(reviewedPath).Trim();
+        if (!string.IsNullOrWhiteSpace(reference))
+            results.Add(new TranscribeSample(id, durations.GetValueOrDefault(id), 0, 0, null, reference, asr.GetString()!.Trim(), ReadContext(sourcePath, id)));
+    }
+    return new TranscribeReport(results);
+}
+
+static TranscribeReport AttachContexts(TranscribeReport source, string contextSourcePath)
+{
+    if (!Directory.Exists(contextSourcePath)) throw new DirectoryNotFoundException($"Context corpus does not exist: {Path.GetFullPath(contextSourcePath)}");
+    return new TranscribeReport(source.Results.Select(sample => sample with { Context = ReadContext(contextSourcePath, sample.Id) }).ToList());
+}
+
+static InsertionContext? ReadContext(string sourcePath, string id)
+{
+    var path = Path.Combine(sourcePath, $"{id}.candidate.json");
+    if (!File.Exists(path)) return null;
+    using var json = JsonDocument.Parse(File.ReadAllBytes(path));
+    if (!json.RootElement.TryGetProperty("context", out var context) || context.ValueKind != JsonValueKind.Object) return null;
+    static string Text(JsonElement value, string name) => value.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String ? property.GetString() ?? "" : "";
+    var result = new InsertionContext(Text(context, "beforeText"), Text(context, "selectedText"), Text(context, "afterText"));
+    return result.HasText ? result : null;
 }
 
 static TierSummary Summarize(string tier, List<CleanupRun> allRuns)
@@ -179,6 +290,18 @@ static string? Argument(string[] values, string name)
     return index >= 0 && index + 1 < values.Length ? values[index + 1] : null;
 }
 
+static int? IntArgument(string[] values, string name) =>
+    int.TryParse(Argument(values, name), out var result) && result >= 0 ? result : null;
+
+static string LoadPrompt(string path, string id)
+{
+    using var json = JsonDocument.Parse(File.ReadAllBytes(path));
+    foreach (var variant in json.RootElement.GetProperty("variants").EnumerateArray())
+        if (variant.GetProperty("id").GetString() == id)
+            return variant.GetProperty("prompt").GetString() ?? throw new InvalidDataException($"Prompt '{id}' is empty.");
+    throw new InvalidDataException($"Prompt '{id}' was not found in {Path.GetFullPath(path)}.");
+}
+
 static string Money(decimal? value) => value.HasValue ? $"${value.Value:F6}" : "n/a";
 
 internal sealed class ResponseCaptureHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
@@ -213,7 +336,7 @@ internal sealed class ResponseCaptureHandler(HttpMessageHandler inner) : Delegat
 internal sealed record Cell(int Cost, int Substitutions, int Deletions, int Insertions);
 internal sealed record Distance(int ReferenceWords, int Substitutions, int Deletions, int Insertions, double ErrorRate);
 internal sealed record TranscribeSample(string Id, double AudioSeconds, double EncodeMs, double RequestMs,
-    decimal? ReportedCost, string Reference, string Transcript);
+    decimal? ReportedCost, string Reference, string Transcript, InsertionContext? Context = null);
 internal sealed record TranscribeReport(List<TranscribeSample> Results);
 internal sealed record CleanupRun(string Id, string Tier, string RequestedTier, string? ResponseTier,
     bool TierConfirmed, double CleanupMs, double AudioSeconds, double EncodeMs, double TranscribeRequestMs,
@@ -225,4 +348,4 @@ internal sealed record TierSummary(string Tier, int Samples, int Successful, int
     decimal? CleanupCost, decimal? CombinedCost, double MedianSequentialPipelineMs,
     double MedianSequentialPipelineWithEncodeMs);
 internal sealed record CleanupReport(DateTimeOffset RunAt, string Model, string Warning, string Prompt,
-    TierSummary[] Summaries, List<CleanupRun> Runs);
+    TierSummary[] Summaries, List<CleanupRun> Runs, string? Provider = null, string? ReasoningEffort = null);

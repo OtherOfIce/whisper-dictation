@@ -21,7 +21,31 @@ Open a specific recording with `?sample=<sample-id>`. For example:
 http://127.0.0.1:4177/?sample=20260906T110730Z-ec5ae0d5
 ```
 
+To review another exported corpus, set `TRANSCRIPT_REVIEWER_CORPUS` to its directory before starting the server. Candidate corpora may include a `.candidate.json` file beside each recording; the reviewer displays its category and insertion context.
+
+```powershell
+$env:TRANSCRIPT_REVIEWER_CORPUS = 'artifacts/wispr-corpus/luna-review'
+node server.cjs
+```
+
 The page feature-detects `document.modelContext`. When that experimental API is present, it exposes small read-only helpers for progress and the current review. Browsers without it use the normal UI.
+
+## Luna candidate review
+
+Export a candidate set, review it with the corpus override above, and import the exported approvals:
+
+```powershell
+node tools/export-wispr-review-set.cjs --ids artifacts/luna-wispr-candidate-ids.json --output artifacts/wispr-corpus/luna-review --limit 10
+node tools/import-transcript-review.cjs --review <exported-review.json> --corpus artifacts/wispr-corpus/luna-review
+```
+
+The transcription benchmark automatically uses only approved `.reviewed.txt` samples. The cleanup-only benchmark reads their saved Wispr ASR text directly:
+
+```powershell
+dotnet run --project tools/transcribe-eval -c Release -- --source artifacts/wispr-corpus/luna-review --output artifacts/transcribe-eval-luna-candidates-mai-clean.json --model microsoft/mai-transcribe-2 --style clean
+dotnet run --project tools/wispr-cleanup-eval -c Release -- --input artifacts/transcribe-eval-luna-candidates-mai-clean.json --output artifacts/luna-candidates-mai-clean.json --tier standard
+dotnet run --project tools/wispr-cleanup-eval -c Release -- --source artifacts/wispr-corpus/luna-review --output artifacts/luna-candidates-wispr-asr.json --tier standard
+```
 
 ## Validation
 

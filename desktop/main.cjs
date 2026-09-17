@@ -6,7 +6,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { projectTimings } = require('./model.cjs');
 const { HistoryStore } = require('./history-store.cjs');
-const { getWordStats } = require('./stats.cjs');
+const { getWordStats, getDisplayedCostStats } = require('./stats.cjs');
 const { readWisprDictionary } = require('./wispr-dictionary.cjs');
 const testMode = process.argv.includes('--ui-test');
 const startupMode = process.argv.includes('--startup');
@@ -18,6 +18,7 @@ else {
   const testOverlayActions = [];
   let nextId = 0, settings = {}, balance = null, refreshPromise, saveQueue = Promise.resolve();
   const pending = new Map();
+  const currentCosts = () => getDisplayedCostStats(history, balance);
   const historyPath = () => path.join(app.getPath('userData'), 'history.sqlite');
   const historyStore = new HistoryStore(historyPath(), safeStorage, path.join(app.getPath('userData'), 'history.bin'));
   const broadcast = value => { for (const win of [main, overlay]) if (win && !win.isDestroyed()) win.webContents.send('event', value); };
@@ -64,7 +65,11 @@ else {
           const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
           overlay.setPosition(Math.round(area.x + (area.width - 192) / 2), area.y + area.height - 64);
         }
-        if (!overlay.isVisible()) overlay.showInactive();
+        if (!overlay.isVisible()) {
+          overlay.showInactive();
+          overlay.setAlwaysOnTop(true, 'screen-saver');
+          overlay.moveTop();
+        }
       }
     }
     if (event.type === 'transcript') {
@@ -73,7 +78,7 @@ else {
       const entry = { ...rest, hasAudio: recording !== null };
       history.unshift(entry);
       persist(recording ? new Map([[entry.id, { bytes: recording, format: audioFormat || 'wav' }]]) : undefined);
-      refreshCredits(); broadcast({ type: 'stats', stats: getWordStats(history) });
+      refreshCredits(); broadcast({ type: 'stats', stats: getWordStats(history), costs: currentCosts() });
       event = { ...event, entry };
     }
     if (event.type === 'metricsUpdated') {
@@ -87,7 +92,7 @@ else {
   async function refreshCredits() {
     if (testMode) return balance;
     if (refreshPromise) return refreshPromise;
-    refreshPromise = send('credits').then(value => { balance = value; broadcast({ type: 'balance', balance }); return balance; })
+    refreshPromise = send('credits').then(value => { balance = value; broadcast({ type: 'balance', balance }); broadcast({ type: 'stats', stats: getWordStats(history), costs: currentCosts() }); return balance; })
       .catch(error => { broadcast({ type: 'balanceError', message: error.message }); return { error: error.message }; })
       .finally(() => { refreshPromise = null; });
     return refreshPromise;
@@ -138,7 +143,7 @@ else {
       return send(method, method === 'finish' ? { fromOverlay: true } : {});
     }
     switch (method) {
-      case 'initial': return { history, settings, balance, state, historyError, stats: getWordStats(history) };
+      case 'initial': return { history, settings, balance, state, historyError, stats: getWordStats(history), costs: currentCosts() };
       case 'refreshCredits': return refreshCredits();
       case 'setLockMode': {
         if (!params || typeof params.lockMode !== 'boolean') throw new Error('Invalid settings.');
@@ -184,7 +189,7 @@ else {
         if (result.canceled) return false;
         await fs.writeFile(result.filePath, recording.bytes); return true;
       }
-      case 'delete': history = history.filter(x => x.id !== params.id); await saveHistory(); broadcast({ type: 'history', history }); broadcast({ type: 'stats', stats: getWordStats(history) }); return true;
+      case 'delete': history = history.filter(x => x.id !== params.id); await saveHistory(); broadcast({ type: 'history', history }); broadcast({ type: 'stats', stats: getWordStats(history), costs: currentCosts() }); return true;
       case 'timings': {
         const entry = history.find(x => x.id === params.id); if (!entry) return null;
         return { metrics: entry.metrics, chart: projectTimings(entry.metrics, params.includeRecording === true) };
@@ -231,7 +236,7 @@ else {
       tray.setContextMenu(Menu.buildFromTemplate([{ label: 'Open Local Whisper', click: () => showMain() }, { label: 'Settings', click: () => showMain('settings') }, { type: 'separator' }, { label: 'Quit', click: () => app.quit() }]));
       tray.on('double-click', () => showMain());
       startEngine();
-      setInterval(() => { if (main.isVisible()) { refreshCredits(); broadcast({ type: 'stats', stats: getWordStats(history) }); } }, 60000).unref();
+      setInterval(() => { if (main.isVisible()) { refreshCredits(); broadcast({ type: 'stats', stats: getWordStats(history), costs: currentCosts() }); } }, 60000).unref();
     }
     if (!startupMode) main.show();
     if (testMode) await require('./tests/ui-smoke.cjs').run({ main, overlay, app, engineEvent, testOverlayActions });

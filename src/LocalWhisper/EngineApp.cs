@@ -15,10 +15,12 @@ internal sealed class EngineApp : ApplicationContext
     private readonly JsonSerializerOptions json = new(JsonSerializerDefaults.Web);
     private Recorder? recorder;
     private TranscriptionSession? session;
+    private Task<InsertionContext>? insertionContext;
     private SessionMetrics? metrics;
     private IDisposable? recordingStage;
     private CancellationTokenSource? operation;
     private string apiKey = "", balanceKey = "", cleanupMode = CleanupService.Off, transcriptionModel = TranscriptionModels.MaiClean, entryId = "";
+    private string? processingPhase;
     private string[] dictionaryTerms = [];
     private nint target;
     private bool liveChunks, lockMode = true, cancelled, exiting;
@@ -80,7 +82,7 @@ internal sealed class EngineApp : ApplicationContext
     private object SettingsState() => new { hasKey = !string.IsNullOrWhiteSpace(apiKey), hasBalanceKey = !string.IsNullOrWhiteSpace(balanceKey), liveChunks, lockMode, cleanupMode, transcriptionModel, dictionaryTerms };
     private void Emit(object value) => output.Writer.TryWrite(value);
     private void Notify(string message) => Emit(new { type = "notice", message });
-    private void PublishState() => Emit(new { type = "state", mode = cancelled || metrics?.Snapshot().PasteMs is not null ? "Idle" : gesture.Mode.ToString(), level = recorder?.Level ?? 0, id = entryId, metrics = metrics?.Snapshot() });
+    private void PublishState() => Emit(new { type = "state", mode = cancelled || metrics?.Snapshot().PasteMs is not null ? "Idle" : gesture.Mode.ToString(), phase = processingPhase, level = recorder?.Level ?? 0, id = entryId, metrics = metrics?.Snapshot() });
     private async void Handle(JsonElement command)
     {
         var id = command.TryGetProperty("id", out var requestId) ? requestId.GetInt32() : 0;
@@ -140,9 +142,10 @@ internal sealed class EngineApp : ApplicationContext
         if (action == GestureAction.Start)
         {
             if (string.IsNullOrWhiteSpace(apiKey)) { gesture.Reset(); Emit(new { type = "needsSettings" }); return; }
-            target = Native.GetForegroundWindow(); cancelled = false;
+            target = Native.GetForegroundWindow(); cancelled = false; processingPhase = null;
             metrics = new SessionMetrics(); entryId = Guid.NewGuid().ToString("N");
             operation = new CancellationTokenSource();
+            insertionContext = cleanupMode == CleanupService.Off ? null : TargetContext.CaptureAsync(target, operation.Token);
             session = new TranscriptionSession(http, apiKey, metrics, operation.Token, dictionaryTerms, transcriptionModel);
             recordingStage = metrics.Measure("Recording"); lastTick = Environment.TickCount64;
             try
@@ -155,6 +158,7 @@ internal sealed class EngineApp : ApplicationContext
             {
                 recorder?.Dispose(); recorder = null; gesture.Reset();
                 operation.Dispose(); operation = null;
+                insertionContext = null;
                 recordingStage.Dispose(); recordingStage = null;
                 metrics.Complete("Microphone error"); metrics = null;
                 Notify($"Could not open the microphone: {ex.Message}");
@@ -167,8 +171,9 @@ internal sealed class EngineApp : ApplicationContext
     {
         var capture = recorder; recorder = null;
         var active = session; var trace = metrics; var cancellation = operation; var id = entryId;
+        var capturedContext = insertionContext; insertionContext = null;
         if (capture is null || active is null || trace is null || cancellation is null) { gesture.Reset(); PublishState(); return; }
-        recordingStage?.Dispose(); recordingStage = null; trace.Stopped(); PublishState();
+        recordingStage?.Dispose(); recordingStage = null; trace.Stopped(); processingPhase = "transcribing"; PublishState();
         var outcome = "Failed"; var rawText = ""; var text = ""; byte[]? audio = null;
         try
         {
@@ -189,10 +194,16 @@ internal sealed class EngineApp : ApplicationContext
             if (text.Length == 0) { outcome = "No speech"; return; }
             if (cleanupMode != CleanupService.Off)
             {
+                processingPhase = "luna"; PublishState();
                 try
                 {
+                    var context = capturedContext is null ? InsertionContext.Empty : await capturedContext;
                     using (trace.Measure(cleanupMode == CleanupService.LunaFast ? "AI cleanup (Luna Fast)" : "AI cleanup (Luna)"))
-                        text = await new CleanupService(http).CleanAsync(rawText, apiKey, cleanupMode, cancellation.Token);
+                    {
+                        var tier = cleanupMode == CleanupService.LunaFast ? CleanupServiceTier.Fast : CleanupServiceTier.Standard;
+                        var result = await new CleanupService(http).CleanupAsync(rawText, context, apiKey, tier, cancellation.Token);
+                        text = result.Text; trace.Cost("cleanup", result.Model, result.Cost);
+                    }
                 }
                 catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { throw; }
                 catch (TimeoutException) { text = rawText; Notify("AI cleanup timed out. The original transcript was used."); }
@@ -210,7 +221,7 @@ internal sealed class EngineApp : ApplicationContext
         catch (Exception ex) { Notify(ex.Message); }
         finally
         {
-            trace.Complete(outcome); cancellation.Dispose(); operation = null; metrics = null; session = null; gesture.Reset();
+            trace.Complete(outcome); cancellation.Dispose(); operation = null; metrics = null; session = null; insertionContext = null; processingPhase = null; gesture.Reset();
             if (!exiting)
             {
                 PublishState();
@@ -230,7 +241,7 @@ internal sealed class EngineApp : ApplicationContext
         if (gesture.Mode == CaptureMode.Busy) return;
         var capture = recorder; recorder = null;
         recordingStage?.Dispose(); recordingStage = null; metrics?.Complete("Cancelled"); metrics = null;
-        operation?.Dispose(); operation = null; session = null; gesture.Reset();
+        operation?.Dispose(); operation = null; session = null; insertionContext = null; gesture.Reset();
         if (capture is not null) _ = Task.Run(capture.Dispose);
     }
     protected override void ExitThreadCore()

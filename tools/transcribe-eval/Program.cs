@@ -13,12 +13,26 @@ var output = Argument(args, "--output") ?? "artifacts/transcribe-eval-gpt-transc
 var model = Argument(args, "--model") ?? Transcriber.Model;
 var style = Argument(args, "--style");
 var sampleId = Argument(args, "--sample");
+var parallelism = int.TryParse(Argument(args, "--parallelism"), out var configuredParallelism)
+    ? configuredParallelism
+    : 4;
+const string MuseModel = "meta/muse-voice-transcribe-1.0";
 var pricePerHour = decimal.TryParse(Argument(args, "--price-per-hour"), out var configuredPrice)
     ? configuredPrice
-    : model == "microsoft/mai-transcribe-2" ? 0.10m : 0.27m;
+    : model switch
+    {
+        "microsoft/mai-transcribe-2" => 0.10m,
+        MuseModel => 0.18m,
+        _ => 0.27m
+    };
 if (style is not null && style is not ("verbatim" or "clean"))
 {
     Console.Error.WriteLine("--style must be verbatim or clean.");
+    return 2;
+}
+if (parallelism < 1)
+{
+    Console.Error.WriteLine("--parallelism must be at least 1.");
     return 2;
 }
 if (!Directory.Exists(source))
@@ -65,15 +79,16 @@ if (string.IsNullOrWhiteSpace(key))
     return 2;
 }
 
-using var capture = new UsageCaptureHandler(new HttpClientHandler());
-using var http = new HttpClient(capture) { Timeout = Timeout.InfiniteTimeSpan };
-var results = new List<SampleResult>();
+var results = new SampleResult[pairs.Length];
 
-Console.WriteLine($"Transcription eval: model={model} style={style ?? "default"} pairs={pairs.Length}");
+Console.WriteLine($"Transcription eval: model={model} style={style ?? "default"} pairs={pairs.Length} parallelism={parallelism}");
 Console.WriteLine($"References: {(reviewedReferenceMode ? "reviewed canonicals" : "provisional Wispr output")}; skipped-unreviewed={skippedUnreviewed}; equivalence-policy={equivalences.Description}");
 Console.WriteLine("Each file is sent once. The locally saved key is never printed or written to the report.");
 
-foreach (var pair in pairs)
+await Parallel.ForEachAsync(Enumerable.Range(0, pairs.Length), new ParallelOptions { MaxDegreeOfParallelism = parallelism },
+    async (index, _) => results[index] = await Evaluate(pairs[index]));
+
+async Task<SampleResult> Evaluate(Sample pair)
 {
     try
     {
@@ -84,30 +99,32 @@ foreach (var pair in pairs)
         using (var reader = new WaveFileReader(pair.WavPath)) audioSeconds = reader.TotalTime.TotalSeconds;
 
         var encodeWatch = Stopwatch.StartNew();
-        var encoded = AudioEncoding.Compress(wav);
+        var encoded = model == MuseModel ? (Bytes: wav, Format: "wav") : AudioEncoding.Compress(wav);
         encodeWatch.Stop();
 
-        capture.Reset();
+        using var capture = new UsageCaptureHandler(new HttpClientHandler());
+        using var http = new HttpClient(capture) { Timeout = Timeout.InfiniteTimeSpan };
         var requestWatch = Stopwatch.StartNew();
         var transcript = await Transcribe(http, encoded.Bytes, encoded.Format, key, model, style, dictionaryTerms);
         requestWatch.Stop();
 
         var distance = WordDistance(reference, transcript, equivalences);
         var estimate = (decimal)audioSeconds / 3600m * pricePerHour;
-        var result = new SampleResult(pair.Id, audioSeconds, wav.LongLength, encoded.Bytes.LongLength,
+        var result = new SampleResult(pair.Id, audioSeconds, wav.LongLength, encoded.Bytes.LongLength, encoded.Format,
             encodeWatch.Elapsed.TotalMilliseconds, requestWatch.Elapsed.TotalMilliseconds,
             dictionaryTerms.Length, pair.ReferenceKind, reference, transcript, distance.ReferenceWords, distance.Substitutions,
             distance.Deletions, distance.Insertions, distance.ErrorRate,
             capture.UsageSeconds, capture.InputTokens, capture.OutputTokens,
             capture.TotalTokens, capture.Cost, estimate, null);
-        results.Add(result);
-        Console.WriteLine($"{pair.Id,2}: audio={audioSeconds,5:F1}s dict={dictionaryTerms.Length,3} mp3={encoded.Bytes.Length / 1024.0,6:F1}KiB encode={encodeWatch.Elapsed.TotalMilliseconds,5:F0}ms request={requestWatch.Elapsed.TotalMilliseconds,5:F0}ms WER={distance.ErrorRate,6:P1} S/D/I={distance.Substitutions}/{distance.Deletions}/{distance.Insertions} cost={Money(capture.Cost)}");
+        Console.WriteLine($"{pair.Id,2}: audio={audioSeconds,5:F1}s dict={dictionaryTerms.Length,3} upload={encoded.Format}:{encoded.Bytes.Length / 1024.0,6:F1}KiB encode={encodeWatch.Elapsed.TotalMilliseconds,5:F0}ms request={requestWatch.Elapsed.TotalMilliseconds,5:F0}ms WER={distance.ErrorRate,6:P1} S/D/I={distance.Substitutions}/{distance.Deletions}/{distance.Insertions} cost={Money(capture.Cost)}");
+        return result;
     }
     catch (Exception error)
     {
-        results.Add(new SampleResult(pair.Id, 0, 0, 0, 0, 0, 0, pair.ReferenceKind, "", "", 0, 0, 0, 0, 0,
-            null, null, null, null, null, 0, $"{error.GetType().Name}: {error.Message}"));
+        var result = new SampleResult(pair.Id, 0, 0, 0, "", 0, 0, 0, pair.ReferenceKind, "", "", 0, 0, 0, 0, 0,
+            null, null, null, null, null, 0, $"{error.GetType().Name}: {error.Message}");
         Console.WriteLine($"{pair.Id,2}: ERROR {error.Message}");
+        return result;
     }
 }
 
@@ -238,6 +255,14 @@ static async Task<string> Transcribe(HttpClient http, byte[] audio, string forma
                 options = new { azure }
             };
     }
+    else if (model == MuseModel && dictionaryTerms.Count > 0)
+        payload["provider"] = new
+        {
+            options = new
+            {
+                meta = new { keywords = dictionaryTerms }
+            }
+        };
     else if (dictionaryTerms.Count > 0)
         payload["provider"] = new
         {
@@ -303,7 +328,7 @@ internal sealed class UsageCaptureHandler(HttpMessageHandler inner) : Delegating
 internal sealed record Sample(string Id, string WavPath, string ReferencePath, string ReferenceKind, string DictionaryPath);
 internal sealed record Cell(int Cost, int Substitutions, int Deletions, int Insertions);
 internal sealed record Distance(int ReferenceWords, int Substitutions, int Deletions, int Insertions, double ErrorRate);
-internal sealed record SampleResult(string Id, double AudioSeconds, long WavBytes, long Mp3Bytes,
+internal sealed record SampleResult(string Id, double AudioSeconds, long WavBytes, long UploadBytes, string UploadFormat,
     double EncodeMs, double RequestMs, int DictionaryTerms, string ReferenceKind, string Reference, string Transcript, int ReferenceWords,
     int Substitutions, int Deletions, int Insertions, double WordErrorRate, double? UsageSeconds,
     int? InputTokens, int? OutputTokens, int? TotalTokens, decimal? ReportedCost,
@@ -314,7 +339,7 @@ internal sealed record Aggregate(int Samples, int Successful, double AudioSecond
     decimal EstimatedCost);
 internal sealed record Report(DateTimeOffset RunAt, string SourceFolder, string Model, string? Style, string ReferenceWarning,
     string EquivalencePolicy,
-    Aggregate Aggregate, List<SampleResult> Results);
+    Aggregate Aggregate, SampleResult[] Results);
 
 internal sealed class EquivalencePolicy
 {

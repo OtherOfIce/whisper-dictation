@@ -3,7 +3,9 @@ body{margin:0;overflow:hidden;background:transparent;display:grid;place-items:ce
 .pill{width:132px;height:42px;border-radius:999px;background:#07080a;display:flex;align-items:center;justify-content:center;gap:7px;padding:6px;box-shadow:0 5px 14px #0007}
 .pill.lock-mode{width:152px}
 .wave{height:22px;display:flex;align-items:center;justify-content:center;gap:4px}
-.bar{width:2px;height:3px;border-radius:999px;background:#f7f7ff;box-shadow:0 0 1px #d9dcff80;will-change:height}
+.bar{width:2px;height:3px;border-radius:999px;background:#f7f7ff;box-shadow:0 0 1px #d9dcff80;will-change:height;transition:background-color .2s ease,box-shadow .2s ease}
+.wave.transcribing .bar{background:#c5cced;box-shadow:0 0 2px #8999d566}
+.wave.luna .bar{background:#cfbfe2;box-shadow:0 0 2px #a17cbd66}
 button{width:28px;height:28px;flex:0 0 28px;border:0;border-radius:50%;display:grid;place-items:center;padding:0;background:#292b2d;color:#f7f7ff;cursor:pointer}
 button:last-child{background:#f7f7ff;color:#08090a}
 button:hover{filter:brightness(1.15)}

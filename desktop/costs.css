@@ -1,0 +1,102 @@
+.history-costs {
+  border-top: 1px solid #e4e3d8;
+  margin-top: 17px;
+  padding-top: 15px;
+  color: #929386;
+  font-size: 9px;
+}
+
+.history-costs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cost-split {
+  display: flex;
+  gap: 12px;
+  margin-top: 9px;
+}
+
+.cost-split span {
+  display: flex;
+  gap: 4px;
+}
+
+.cost-split strong {
+  color: #666b5d;
+  font-weight: 500;
+}
+
+.cost-details {
+  position: relative;
+  display: inline-flex;
+}
+
+.cost-info {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #a1a397;
+}
+
+.cost-info:hover,
+.cost-info:focus-visible {
+  background: #e7e6dc;
+  color: #62675a;
+  outline-offset: 1px;
+}
+
+.cost-info svg {
+  width: 12px;
+  height: 12px;
+}
+
+.cost-popover {
+  display: none;
+  position: absolute;
+  z-index: 4;
+  right: -5px;
+  bottom: 24px;
+  width: 205px;
+  padding: 13px 14px;
+  border: 1px solid #e3e2d8;
+  border-radius: 11px;
+  background: #fffefa;
+  box-shadow: 0 8px 24px #34362d1f;
+  color: #777a70;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.cost-details:hover .cost-popover,
+.cost-details:focus-within .cost-popover {
+  display: grid;
+  gap: 6px;
+}
+
+.cost-popover-heading {
+  margin-top: 2px;
+  color: #555a4f;
+  font-weight: 600;
+}
+
+.cost-popover-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.cost-popover-row strong {
+  color: #555a4f;
+  font-weight: 500;
+}
+
+.cost-popover-note {
+  border-top: 1px solid #edede7;
+  margin-top: 3px;
+  padding-top: 7px;
+  color: #a1a297;
+}

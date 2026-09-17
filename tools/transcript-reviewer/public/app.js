@@ -86,6 +86,22 @@
     });
     if (!container.children.length) container.append(create('p', 'muted', 'No transcript stages available.'));
   }
+  function renderCandidate(sample) {
+    const panel = $('candidatePanel');
+    const candidate = sample.candidate;
+    panel.hidden = !candidate;
+    if (!candidate) return;
+    $('candidateCategory').textContent = candidate.category || 'Uncategorised';
+    $('contextBefore').textContent = candidate.context?.beforeText || 'No preceding text captured.';
+    $('contextSelected').textContent = candidate.context?.selectedText || 'No selection captured.';
+    $('contextAfter').textContent = candidate.context?.afterText || 'No following text captured.';
+    const evidence = candidate.evidence || {};
+    $('candidateEvidence').textContent = [
+      candidate.rerecordable ? 'Suitable for a recreated recording' : 'Keep as original-audio test',
+      evidence.numWordsCorrected == null ? null : `${evidence.numWordsCorrected} corrected words recorded`,
+      evidence.contentObservationEndReason ? `observation ended: ${evidence.contentObservationEndReason}` : null,
+    ].filter(Boolean).join(' · ');
+  }
   function renderModels(sample) {
     const container = $('modelOutputs');
     container.replaceChildren();
@@ -139,6 +155,7 @@
     $('provisionalText').textContent = sample.provisional || 'No provisional text found.';
     $('referenceKind').textContent = sample.transcripts.selectedReference ? `Selected: ${sample.transcripts.selectedReference}` : 'Reference stage unavailable';
     renderStages(sample);
+    renderCandidate(sample);
     renderModels(sample);
     $('dictionaryCount').textContent = `${sample.dictionary.terms.length} terms`;
     $('dictionaryMeta').textContent = [sample.dictionary.recordedAt, sample.dictionary.reconstruction].filter(Boolean).join(' · ') || 'No dictionary reconstruction found.';
@@ -170,7 +187,7 @@
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   function exportData() {
-    const payload = { format: 'local-whisper-transcript-review', version: 1, exportedAt: new Date().toISOString(), corpus: 'normal', reviews: state.reviews };
+    const payload = { format: 'local-whisper-transcript-review', version: 1, exportedAt: new Date().toISOString(), corpus: state.data?.dataset || 'unknown', reviews: state.reviews };
     return payload;
   }
   function markdown() {
@@ -267,7 +284,7 @@
       if (seededIds.length) localStorage.setItem(STORAGE_KEY, JSON.stringify(state.reviews));
       state.seedStatus = seededIds.length ? `${seededIds.length} initial feedback entries loaded` : 'Initial feedback checked; existing local reviews kept';
       $('seedStatus').textContent = state.seedStatus;
-      $('datasetStatus').textContent = `${state.data.sampleCount} samples loaded · ${state.seedStatus}. No network requests are used.`;
+      $('datasetStatus').textContent = `${state.data.sampleCount} samples loaded from ${state.data.dataset} · ${state.seedStatus}. No network requests are used.`;
       installModelContext();
       selectInitialSample();
       render();

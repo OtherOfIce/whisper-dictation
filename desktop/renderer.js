@@ -12,7 +12,8 @@ const icons = {
   mic: '<rect x="9" y="2" width="6" height="13" rx="3"/><path d="M6 10v2a6 6 0 0 0 12 0v-2m-6 8v4m-3 0h6"/>',
   arrow: '<path d="M4 12h16m-6-6 6 6-6 6"/>',
   minus: '<path d="M4 12h16"/>', square: '<rect x="5" y="5" width="14" height="14" rx="1"/>',
-  x: '<path d="m6 6 12 12M18 6 6 18"/>', download: '<path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/>'
+  x: '<path d="m6 6 12 12M18 6 6 18"/>', download: '<path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/>'
 };
 function icon(name) { const span = document.createElement('span'); span.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.wave}</svg>`; return span; }
 document.querySelectorAll('[data-icon]').forEach(node => node.replaceWith(icon(node.dataset.icon)));
@@ -99,6 +100,47 @@ function renderHistory() {
 $('search').oninput = () => { pageSize = 100; renderHistory(); };
 $('load-more').onclick = () => { pageSize += 100; renderHistory(); };
 const money = (number, digits = 2) => number == null ? '—' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: digits, maximumFractionDigits: digits }).format(number);
+const modelNames = {
+  'openai/gpt-transcribe': 'GPT-Transcribe',
+  'microsoft/mai-transcribe-2': 'MAI-Transcribe-2',
+  'openai/gpt-5.6-luna': 'Luna',
+  'gpt-transcribe': 'GPT-Transcribe',
+  'mai-transcribe-2-verbatim': 'MAI-Transcribe-2 · Verbatim',
+  'mai-transcribe-2-clean': 'MAI-Transcribe-2 · Clean',
+  luna: 'Luna',
+  'luna-fast': 'Luna Fast'
+};
+function renderCosts(costs) {
+  const activity = costs?.source === 'activity';
+  const locallyRecorded = (costs?.voiceCount || 0) + (costs?.cleanupCount || 0) > 0;
+  $('cost-voice').textContent = activity ? money(costs.voice, 4) : '—';
+  $('cost-cleanup').textContent = activity ? money(costs.cleanup, 4) : '—';
+  const popover = $('cost-model-breakdown');
+  const fragment = document.createDocumentFragment();
+  if (!activity) {
+    const heading = document.createElement('span'); heading.className = 'cost-popover-heading'; heading.textContent = 'Complete breakdown unavailable'; fragment.append(heading);
+    const help = document.createElement('span'); help.textContent = 'Add an OpenRouter management key in Settings to read model costs from account activity.'; fragment.append(help);
+    if (locallyRecorded) {
+      const note = document.createElement('span'); note.className = 'cost-popover-note'; note.textContent = `${money(costs.voice + costs.cleanup, 5)} has been recorded locally, but this is only part of the total.`; fragment.append(note);
+    }
+    popover.replaceChildren(fragment); return;
+  }
+  for (const category of ['voice', 'cleanup']) {
+    const rows = costs.models.filter(item => item.category === category);
+    if (!rows.length) continue;
+    const heading = document.createElement('span'); heading.className = 'cost-popover-heading'; heading.textContent = category === 'voice' ? 'Voice' : 'Luna'; fragment.append(heading);
+    for (const row of rows) {
+      const item = document.createElement('span'); item.className = 'cost-popover-row';
+      const name = document.createElement('span'); name.textContent = modelNames[row.model] || row.model;
+      const amount = document.createElement('strong'); amount.textContent = money(row.amount, 5);
+      item.append(name, amount); fragment.append(item);
+    }
+  }
+  const note = document.createElement('span'); note.className = 'cost-popover-note';
+  note.textContent = "OpenRouter's last 30 completed days, plus costs recorded here today.";
+  fragment.append(note);
+  popover.replaceChildren(fragment);
+}
 function renderBalance(balance) {
   latestBalance = balance;
   if (!balance) return;
@@ -195,7 +237,7 @@ window.whisper.onEvent(event => {
   if (event.type === 'transcript') { history.unshift(event.entry); renderHistory(); }
   if (event.type === 'history') { history = event.history; renderHistory(); if (selectedId && !history.some(entry => entry.id === selectedId)) closeDrawer(); }
   if (event.type === 'metricsUpdated') { const entry = history.find(x => x.id === event.id); if (entry) entry.metrics = event.metrics; if (event.id === selectedId) renderPerformance(); }
-  if (event.type === 'stats') renderWordStats(event.stats);
+  if (event.type === 'stats') { renderWordStats(event.stats); renderCosts(event.costs); }
   if (event.type === 'balance') renderBalance(event.balance);
   if (event.type === 'balanceError') { $('balance-detail').textContent = latestBalance ? 'Refresh failed. Showing the last known balance.' : 'Balance unavailable. Try refreshing.'; }
   if (event.type === 'settings' || event.type === 'ready') renderSettings(event.settings);
@@ -205,6 +247,6 @@ window.whisper.onEvent(event => {
   if (event.type === 'notice') toast(event.message);
 });
 call('initial').then(initial => {
-  history = initial.history; renderHistory(); renderWordStats(initial.stats); renderSettings(initial.settings); renderBalance(initial.balance);
+  history = initial.history; renderHistory(); renderWordStats(initial.stats); renderCosts(initial.costs); renderSettings(initial.settings); renderBalance(initial.balance);
   if (initial.historyError) toast('Saved history could not be read. The existing file has been left untouched.');
 }).catch(error => toast(error.message));

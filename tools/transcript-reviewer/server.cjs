@@ -5,7 +5,9 @@ const { URL } = require('node:url');
 
 const PORT = Number(process.env.TRANSCRIPT_REVIEWER_PORT || 4177);
 const ROOT = path.resolve(__dirname, '..', '..');
-const CORPUS = path.join(ROOT, 'artifacts', 'wispr-corpus', 'normal');
+const CORPUS = process.env.TRANSCRIPT_REVIEWER_CORPUS
+  ? path.resolve(process.env.TRANSCRIPT_REVIEWER_CORPUS)
+  : path.join(ROOT, 'artifacts', 'wispr-corpus', 'normal');
 const ARTIFACTS = path.join(ROOT, 'artifacts');
 const PUBLIC = path.join(__dirname, 'public');
 const INITIAL_REVIEW = path.join(__dirname, 'initial-review-data.json');
@@ -27,9 +29,16 @@ const reports = fs.readdirSync(ARTIFACTS)
   });
 
 function samples() {
+  const manifest = (() => {
+    try { return JSON.parse(fs.readFileSync(path.join(CORPUS, 'manifest.json'), 'utf8')); }
+    catch { return {}; }
+  })();
+  const sequence = new Map((manifest.samples || []).map((sample, index) => [sample.id, sample.sequence ?? index + 1]));
   return fs.readdirSync(CORPUS)
     .filter((name) => name.endsWith('.transcripts.json'))
-    .sort()
+    .sort((left, right) => (sequence.get(left.slice(0, -'.transcripts.json'.length)) ?? Number.MAX_SAFE_INTEGER)
+      - (sequence.get(right.slice(0, -'.transcripts.json'.length)) ?? Number.MAX_SAFE_INTEGER)
+      || left.localeCompare(right))
     .map((transcriptName) => {
       const id = transcriptName.slice(0, -'.transcripts.json'.length);
       const readJson = (suffix, fallback) => {
@@ -41,6 +50,7 @@ function samples() {
       };
       const transcripts = readJson('.transcripts.json', {});
       const dictionary = readJson('.dictionary.json', {});
+      const candidate = readJson('.candidate.json', null);
       const reportResults = reports.map((report) => {
         const result = report.results.find((item) => item.Id === id);
         return result ? {
@@ -81,6 +91,7 @@ function samples() {
           reconstruction: dictionary.reconstruction || '',
           terms: Array.isArray(dictionary.terms) ? dictionary.terms : [],
         },
+        candidate,
         reports: reportResults,
       };
     });
@@ -109,7 +120,7 @@ function safeId(value) {
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   if (url.pathname === '/api/data') {
-    try { const corpus = samples(); return send(res, 200, JSON.stringify({ localOnly: true, sampleCount: corpus.length, reports: reports.map(({ file, model, label, style, runAt }) => ({ file, model, label, style, runAt })), samples: corpus })); }
+    try { const corpus = samples(); return send(res, 200, JSON.stringify({ localOnly: true, dataset: path.basename(CORPUS), sampleCount: corpus.length, reports: reports.map(({ file, model, label, style, runAt }) => ({ file, model, label, style, runAt })), samples: corpus })); }
     catch (error) { return send(res, 500, JSON.stringify({ error: error.message })); }
   }
   if (url.pathname === '/api/initial-review') {

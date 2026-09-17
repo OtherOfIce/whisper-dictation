@@ -29,6 +29,20 @@ exports.run = async ({ main, overlay, app, engineEvent, testOverlayActions }) =>
   assert.equal(await evaluate('document.querySelectorAll(\'[aria-label="No saved audio"]\').length'), 6);
   assert.equal(await evaluate('getComputedStyle(document.querySelector(\'[aria-label="No saved audio"]\')).cursor'), 'default');
   assert.equal(await evaluate('document.getElementById("balance-amount").textContent'), '$18.42');
+  assert.equal(await evaluate('document.getElementById("cost-voice").textContent'), '$0.0212');
+  assert.equal(await evaluate('document.getElementById("cost-cleanup").textContent'), '$0.0038');
+  await evaluate('document.querySelector(".cost-info").focus()');
+  assert.equal(await evaluate('getComputedStyle(document.getElementById("cost-model-breakdown")).display'), 'grid');
+  assert((await evaluate('document.getElementById("cost-model-breakdown").textContent')).includes('MAI-Transcribe-2'));
+  assert((await evaluate('document.getElementById("cost-model-breakdown").textContent')).includes('last 30 completed days'));
+  engineEvent({ type: 'stats', stats: { total: 83, today: 83, last7Days: 83 }, costs: {
+    voice: 0.0042, cleanup: 0.0008, voiceCount: 4, cleanupCount: 2, source: 'history',
+    models: [{ category: 'voice', model: 'microsoft/mai-transcribe-2', amount: 0.0042 }, { category: 'cleanup', model: 'openai/gpt-5.6-luna', amount: 0.0008 }]
+  } });
+  await wait(50);
+  assert.equal(await evaluate('document.getElementById("cost-voice").textContent'), '—');
+  assert.equal(await evaluate('document.getElementById("cost-cleanup").textContent'), '—');
+  assert((await evaluate('document.getElementById("cost-model-breakdown").textContent')).includes('management key'));
   assert(!overlay.isVisible());
   await fs.writeFile(path.join(directory, 'history.png'), (await main.webContents.capturePage()).toPNG());
   await evaluate(`document.querySelector('[aria-label="Show performance"]').click()`); await wait(200);
@@ -93,7 +107,15 @@ exports.run = async ({ main, overlay, app, engineEvent, testOverlayActions }) =>
   assert.equal(await overlay.webContents.executeJavaScript('document.body.innerText'), '');
   assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("cancel").hidden'), true);
   assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("finish").hidden'), true);
+  assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("wave").className'), 'wave');
+  engineEvent({ type: 'state', mode: 'Busy', phase: 'transcribing', level: 0 }); await wait(250);
+  assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("wave").className'), 'wave transcribing');
+  assert.equal(await overlay.webContents.executeJavaScript('getComputedStyle(document.querySelector(".bar")).backgroundColor'), 'rgb(197, 204, 237)');
+  engineEvent({ type: 'state', mode: 'Busy', phase: 'luna', level: 0 }); await wait(250);
+  assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("wave").className'), 'wave luna');
+  assert.equal(await overlay.webContents.executeJavaScript('getComputedStyle(document.querySelector(".bar")).backgroundColor'), 'rgb(207, 191, 226)');
   engineEvent({ type: 'state', mode: 'LockMode', level: .18 }); await wait(100);
+  assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("wave").className'), 'wave');
   assert.equal(overlay.isFocusable(), false);
   assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("cancel").hidden'), false);
   assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("finish").hidden'), false);

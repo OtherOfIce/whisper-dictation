@@ -49,6 +49,23 @@ internal static class Program
             Check(result.Usage == 1.5m && result.UsageDaily == .2m, "Existing key usage is retained when balance is forbidden");
             Check(result.Remaining == (kind == "account" ? 75m : kind == "key" ? 8.5m : (decimal?)null), "An unlimited key is not treated as an account balance");
         }
+        using var activityHttp = new HttpClient(new Handler((request, _) =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            var content = path switch
+            {
+                "/api/v1/key" => "{\"data\":{\"label\":\"sk-or-v1-abc...xyz\",\"usage\":0.5}}",
+                "/api/v1/keys" => "{\"data\":[{\"label\":\"sk-or-v1-abc...xyz\",\"hash\":\"key-hash\"}]}",
+                "/api/v1/activity" => "{\"data\":[{\"model\":\"microsoft/mai-transcribe-2\",\"usage\":0.012},{\"model\":\"openai/gpt-5.6-luna\",\"usage\":0.003},{\"model\":\"other/model\",\"usage\":4}]}",
+                "/api/v1/credits" => "{\"data\":{\"total_credits\":10,\"total_usage\":1}}",
+                _ => throw new Exception($"Unexpected credit endpoint: {path}")
+            };
+            if (path == "/api/v1/activity") Check(request.RequestUri.Query.Contains("api_key_hash=key-hash"), "Activity is filtered to the dictation API key");
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(content) });
+        }));
+        var activity = await new Credits(activityHttp).GetAsync("inference-key", "management-key");
+        Check(activity.Costs is [{ Category: "voice", Model: Transcriber.MaiModel, Amount: 0.012m }, { Category: "cleanup", Model: CleanupService.Model, Amount: 0.003m }], "Activity groups the dictation key's voice and Luna costs");
+        Check(activity.CostsThrough == DateTime.UtcNow.Date.AddDays(-1), "Activity stops at the last completed UTC day");
     }
     private static void PauseSplitting()
     {
@@ -182,9 +199,11 @@ internal static class Program
             Check(style == "clean", "Default uses MAI Clean transcription");
             Check(body.RootElement.GetProperty("input_audio").GetProperty("format").GetString() == "wav", "WAV format");
             Check(Convert.FromBase64String(body.RootElement.GetProperty("input_audio").GetProperty("data").GetString()!).SequenceEqual(new byte[] { 1, 2, 3 }), "Audio survives base64 encoding");
-            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"text\":\"  Hello, ä¸–ç•Œ!  \"}", Encoding.UTF8, "application/json") };
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"text\":\"  Hello, ä¸–ç•Œ!  \",\"usage\":{\"cost\":0.00042}}", Encoding.UTF8, "application/json") };
         }));
-        Check(await new Transcriber(http).TranscribeAsync([1, 2, 3], "test-only", default) == "Hello, ä¸–ç•Œ!", "Unicode transcript preserved");
+        var apiMetrics = new SessionMetrics();
+        Check(await new Transcriber(http).TranscribeAsync([1, 2, 3], "test-only", default, apiMetrics) == "Hello, ä¸–ç•Œ!", "Unicode transcript preserved");
+        Check(apiMetrics.Snapshot().Costs is [{ Category: "voice", Model: Transcriber.MaiModel, Amount: 0.00042m }], "Transcription records provider cost against the voice model");
         foreach (var status in new[] { 401, 402, 429, 500 })
         {
             using var failed = new HttpClient(new Handler((_, _) => Task.FromResult(new HttpResponseMessage((HttpStatusCode)status))));
@@ -217,6 +236,13 @@ internal static class Program
                 var focused = Native.GetForegroundWindow();
                 if (focused == form.Handle)
                 {
+                    field.Text = "The animal was a cat, just as an example.";
+                    field.Select(field.Text.IndexOf("cat", StringComparison.Ordinal), 3);
+                    var context = await TargetContext.CaptureAsync(form.Handle, default);
+                    Check(context.BeforeText.EndsWith("The animal was a ", StringComparison.Ordinal), "Target context captures text before the selection");
+                    Check(context.SelectedText == "cat", "Target context captures selected text");
+                    Check(context.AfterText.StartsWith(", just as an example.", StringComparison.Ordinal), "Target context captures text after the selection");
+                    field.Clear();
                     Clipboard.SetText("clipboard sentinel");
                     Check(await Paste.IntoAsync("Hello, ä¸–ç•Œ!", form.Handle, default), "Native paste accepted");
                     await Task.Delay(50);

@@ -23,7 +23,24 @@ const texts = [
 ];
 module.exports = {
   metrics,
-  history: texts.map((text, i) => ({ id: `demo-${i}`, text, hasAudio: i === 0, metrics: { ...metrics, started: new Date(Date.now() - i * 3600000).toISOString() } })),
-  settings: { hasKey: true, hasBalanceKey: false, liveChunks: false, lockMode: true, transcriptionModel: 'mai-transcribe-2-clean', cleanupMode: 'off', dictionaryTerms: [] },
-  balance: { kind: 'account', remaining: 18.42, usage: 1.5832, usageDaily: .0642, message: 'OpenRouter account balance', updated: new Date().toISOString() }
+  history: texts.map((text, i) => ({ id: `demo-${i}`, text, hasAudio: i === 0, metrics: {
+    ...metrics,
+    started: new Date(Date.now() - i * 3600000).toISOString(),
+    costs: [
+      { category: 'voice', model: [
+        'microsoft/mai-transcribe-2', 'openai/gpt-transcribe', 'microsoft/mai-transcribe-2', 'microsoft/mai-transcribe-2'
+      ][i], amount: [0.0012, 0.001, 0.0011, 0.0009][i] },
+      ...([0, 2].includes(i) ? [{ category: 'cleanup', model: 'openai/gpt-5.6-luna', amount: i === 0 ? 0.0003 : 0.0005 }] : [])
+    ]
+  } })),
+  settings: { hasKey: true, hasBalanceKey: true, liveChunks: false, lockMode: true, transcriptionModel: 'mai-transcribe-2-clean', cleanupMode: 'off', dictionaryTerms: [] },
+  balance: {
+    kind: 'account', remaining: 18.42, usage: 1.5832, usageDaily: .0642, message: 'OpenRouter account balance', updated: new Date().toISOString(),
+    costsThrough: new Date(Date.now() - 86400000).toISOString(),
+    costs: [
+      { category: 'voice', model: 'microsoft/mai-transcribe-2', amount: 0.012 },
+      { category: 'voice', model: 'openai/gpt-transcribe', amount: 0.005 },
+      { category: 'cleanup', model: 'openai/gpt-5.6-luna', amount: 0.003 }
+    ]
+  }
 };

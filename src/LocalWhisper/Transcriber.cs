@@ -80,6 +80,10 @@ public sealed class Transcriber(HttpClient client)
         using var json = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellation).ConfigureAwait(false), cancellationToken: cancellation).ConfigureAwait(false);
         if (!json.RootElement.TryGetProperty("text", out var text) || text.ValueKind != JsonValueKind.String)
             throw new InvalidDataException("OpenRouter returned no transcript. Try again.");
+        var root = json.RootElement;
+        var usage = root.TryGetProperty("usage", out var usageValue) ? usageValue : default;
+        metrics?.Cost("voice", TranscriptionModels.IsMai(transcriptionModel) ? MaiModel : Model,
+            usage.ValueKind == JsonValueKind.Object && usage.TryGetProperty("cost", out var cost) && cost.TryGetDecimal(out var amount) ? amount : null);
         return text.GetString()!.Trim();
     }
 
