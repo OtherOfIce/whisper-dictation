@@ -4,8 +4,9 @@ namespace LocalWhisper;
 
 public sealed record TimingRow(string Name, double StartMs, double DurationMs, bool Running);
 public sealed record CostRow(string Category, string Model, decimal Amount);
+public sealed record HedgeEvent(double CutoffMs, int WinnerAttempt, double WinnerMs, double? LoserMs, double? SavedMs);
 public sealed record MetricsSnapshot(DateTime Started, string Outcome, double AudioSeconds, long AudioBytes, long RequestBytes,
-    double ElapsedMs, double? StopMs, double? PasteMs, double MaxUiGapMs, TimingRow[] Rows, CostRow[] Costs);
+    double ElapsedMs, double? StopMs, double? PasteMs, double MaxUiGapMs, TimingRow[] Rows, CostRow[] Costs, HedgeEvent[] Hedges);
 
 public sealed class SessionMetrics
 {
@@ -13,6 +14,7 @@ public sealed class SessionMetrics
     private readonly object gate = new();
     private readonly List<Stage> stages = [];
     private readonly List<CostRow> costs = [];
+    private readonly List<HedgeEvent> hedges = [];
     private readonly DateTime started = DateTime.Now;
     private double? stopMs, pasteMs;
     private double audioSeconds, maxUiGap;
@@ -35,6 +37,10 @@ public sealed class SessionMetrics
         lock (gate) costs.Add(new(category, model, value));
     }
     public void Stopped() { lock (gate) { stopMs ??= ElapsedMs; outcome = "Transcribing"; } }
+    public void Hedge(double cutoffMs, int winnerAttempt, double winnerMs, double? loserMs, double? savedMs)
+    {
+        lock (gate) hedges.Add(new(cutoffMs, winnerAttempt, winnerMs, loserMs, savedMs));
+    }
     public void Pasted() { lock (gate) pasteMs = ElapsedMs; }
     public void UiGap(double ms) { lock (gate) maxUiGap = Math.Max(maxUiGap, ms); }
     public void Complete(string result) { lock (gate) { outcome = result; finishedMs = ElapsedMs; } }
@@ -42,7 +48,7 @@ public sealed class SessionMetrics
     {
         lock (gate) return new(started, outcome, audioSeconds, audioBytes, requestBytes,
             Math.Max(finishedMs ?? ElapsedMs, stages.Count == 0 ? 0 : stages.Max(s => s.End ?? ElapsedMs)), stopMs, pasteMs, maxUiGap,
-            stages.Select(s => new TimingRow(s.Name, s.Start, (s.End ?? ElapsedMs) - s.Start, s.End is null)).ToArray(), costs.ToArray());
+            stages.Select(s => new TimingRow(s.Name, s.Start, (s.End ?? ElapsedMs) - s.Start, s.End is null)).ToArray(), costs.ToArray(), hedges.ToArray());
     }
     private sealed class Stage(SessionMetrics owner, string name, double start) : IDisposable
     {

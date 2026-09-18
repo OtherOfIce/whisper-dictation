@@ -17,7 +17,7 @@ internal static class Program
             if (args.Contains("--credits"))
             {
                 using var http = new HttpClient();
-                var balance = new Credits(http).GetAsync(Settings.LoadKey(), Settings.LoadBalanceKey()).GetAwaiter().GetResult();
+                var balance = new Credits(http).GetAsync(Settings.LoadKey()).GetAwaiter().GetResult();
                 Console.WriteLine($"kind={balance.Kind} usageAvailable={balance.Usage.HasValue} remainingAvailable={balance.Remaining.HasValue}");
                 return;
             }
@@ -44,7 +44,7 @@ internal static class Program
                 var body = key ? "{\"data\":{\"usage\":1.5,\"usage_daily\":0.2,\"usage_monthly\":1.0,\"limit_remaining\":" + (kind == "key" ? "8.5" : "null") + "}}" : "{\"data\":{\"total_credits\":100,\"total_usage\":25}}";
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
             }));
-            var result = await new Credits(http).GetAsync("test-only", "");
+            var result = await new Credits(http).GetAsync("test-only");
             Check(result.Kind == kind, "Account balance and key allowance stay distinct");
             Check(result.Usage == 1.5m && result.UsageDaily == .2m, "Existing key usage is retained when balance is forbidden");
             Check(result.Remaining == (kind == "account" ? 75m : kind == "key" ? 8.5m : (decimal?)null), "An unlimited key is not treated as an account balance");
@@ -56,16 +56,17 @@ internal static class Program
             {
                 "/api/v1/key" => "{\"data\":{\"label\":\"sk-or-v1-abc...xyz\",\"usage\":0.5}}",
                 "/api/v1/keys" => "{\"data\":[{\"label\":\"sk-or-v1-abc...xyz\",\"hash\":\"key-hash\"}]}",
-                "/api/v1/activity" => "{\"data\":[{\"model\":\"microsoft/mai-transcribe-2\",\"usage\":0.012},{\"model\":\"openai/gpt-5.6-luna\",\"usage\":0.003},{\"model\":\"other/model\",\"usage\":4}]}",
-                "/api/v1/credits" => "{\"data\":{\"total_credits\":10,\"total_usage\":1}}",
+                "/api/v1/activity" => "{\"data\":[{\"date\":\"2026-09-15\",\"model\":\"microsoft/mai-transcribe-2\",\"provider_name\":\"Azure\",\"endpoint_id\":\"ep-1\",\"requests\":4,\"usage\":0.012},{\"date\":\"2026-09-15\",\"model\":\"openai/gpt-5.6-luna\",\"provider_name\":\"OpenAI\",\"endpoint_id\":\"ep-2\",\"requests\":2,\"usage\":0.003},{\"date\":\"2026-09-15\",\"model\":\"other/model\",\"usage\":4}]}",
                 _ => throw new Exception($"Unexpected credit endpoint: {path}")
             };
+            Check(request.Headers.Authorization?.Parameter == (path == "/api/v1/key" ? "inference-key" : "management-key"), "Activity import uses each key only for its intended endpoint");
             if (path == "/api/v1/activity") Check(request.RequestUri.Query.Contains("api_key_hash=key-hash"), "Activity is filtered to the dictation API key");
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(content) });
         }));
-        var activity = await new Credits(activityHttp).GetAsync("inference-key", "management-key");
-        Check(activity.Costs is [{ Category: "voice", Model: Transcriber.MaiModel, Amount: 0.012m }, { Category: "cleanup", Model: CleanupService.Model, Amount: 0.003m }], "Activity groups the dictation key's voice and Luna costs");
-        Check(activity.CostsThrough == DateTime.UtcNow.Date.AddDays(-1), "Activity stops at the last completed UTC day");
+        var activity = await new Credits(activityHttp).ImportActivityAsync("inference-key", "management-key");
+        Check(activity.Rows is [{ Category: "voice", Model: Transcriber.MaiModel, Amount: 0.012m, Requests: 4 }, { Category: "cleanup", Model: CleanupService.Model, Amount: 0.003m, Requests: 2 }], "Activity imports the dictation key's voice and Luna costs");
+        Check(activity.Rows[0].Provider == "Azure" && activity.Rows[0].Endpoint == "ep-1", "Activity keeps the provider endpoint breakdown");
+        Check(activity.Through == DateTime.UtcNow.Date.AddDays(-1), "Activity stops at the last completed UTC day");
     }
     private static void PauseSplitting()
     {
@@ -107,6 +108,22 @@ internal static class Program
         Check(await session.FinishAsync() == "first second", "Out-of-order responses are assembled in recording order");
         Check(trace.Snapshot().Rows.All(r => !r.Running), "Completed requests leave no stuck timing rows");
         Check(trace.Snapshot().RequestBytes > 0, "Request size is measured");
+        var mixedCalls = 0;
+        using var mixed = new HttpClient(new Handler((_, _) =>
+        {
+            var n = Interlocked.Increment(ref mixedCalls);
+            if (n % 2 == 1) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadRequest));
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"text\":\"kept\"}") });
+        }));
+        var partial = new TranscriptionSession(mixed, "test-only", new SessionMetrics(), default);
+        partial.EnqueuePcm(Pcm(1)); partial.EnqueuePcm(Pcm(2));
+        Check(await partial.FinishAsync() == "kept", "A failed chunk keeps the successful chunks instead of losing the recording");
+        Check(partial.Failed == 1 && partial.Completed == 1, "Failed chunks are counted separately from completed ones");
+        using var alwaysFail = new HttpClient(new Handler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized))));
+        var doomed = new TranscriptionSession(alwaysFail, "test-only", new SessionMetrics(), default);
+        doomed.EnqueuePcm(Pcm(1));
+        try { await doomed.FinishAsync(); throw new Exception("Expected persistent transcription failure"); }
+        catch (HttpRequestException) { Check(doomed.Failed == 1, "A fully failed recording reports its failed chunks"); }
         using var cancellation = new CancellationTokenSource();
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var blocked = new HttpClient(new Handler(async (_, token) =>
@@ -207,15 +224,72 @@ internal static class Program
         foreach (var status in new[] { 401, 402, 429, 500 })
         {
             using var failed = new HttpClient(new Handler((_, _) => Task.FromResult(new HttpResponseMessage((HttpStatusCode)status))));
-            try { await new Transcriber(failed).TranscribeAsync([0], "test-only", default); throw new Exception("Expected API error"); }
+            try { await new Transcriber(failed) { RetryBackoff = _ => TimeSpan.Zero }.TranscribeAsync([0], "test-only", default); throw new Exception("Expected API error"); }
             catch (HttpRequestException ex) { Check(!ex.Message.Contains("test-only"), "API errors do not expose key"); }
         }
+        var flakyCalls = 0;
+        using var flaky = new HttpClient(new Handler((_, _) =>
+        {
+            if (Interlocked.Increment(ref flakyCalls) <= 2)
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.TooManyRequests) { Content = new StringContent("{\"error\":{\"message\":\"No servers available\"}}") });
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"text\":\"Recovered\"}") });
+        }));
+        Check(await new Transcriber(flaky) { RetryBackoff = _ => TimeSpan.Zero }.TranscribeAsync([1], "test-only", default) == "Recovered", "Transient rate limits are retried without losing the recording");
+        Check(flakyCalls == 3, "Two throttled tries precede the successful transcription");
+        var immediateCalls = 0;
+        using var rejected = new HttpClient(new Handler((_, _) =>
+        {
+            Interlocked.Increment(ref immediateCalls);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized));
+        }));
+        try { await new Transcriber(rejected) { RetryBackoff = _ => TimeSpan.Zero }.TranscribeAsync([0], "test-only", default); throw new Exception("Expected auth error"); }
+        catch (HttpRequestException) { Check(immediateCalls == 1, "Rejected keys fail fast without retries"); }
+        Check(Transcriber.IsRetryableStatus(HttpStatusCode.TooManyRequests) && Transcriber.IsRetryableStatus(HttpStatusCode.ServiceUnavailable), "Rate limits and outages are retryable");
+        Check(!Transcriber.IsRetryableStatus(HttpStatusCode.Unauthorized) && !Transcriber.IsRetryableStatus(HttpStatusCode.PaymentRequired), "Auth and credit errors are not retried");
         using var malformed = new HttpClient(new Handler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") })));
         try { await new Transcriber(malformed).TranscribeAsync([0], "test-only", default); throw new Exception("Expected malformed response error"); }
         catch (InvalidDataException) { Check(true, "Missing text is rejected"); }
         using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
         try { await new Transcriber(http).TranscribeAsync([0], "test-only", cancelled.Token); throw new Exception("Expected cancellation"); }
         catch (OperationCanceledException) { Check(true, "Cancelled requests abort"); }
+        Check(Transcriber.DefaultHedgeDelay(0) == TimeSpan.FromMilliseconds(2500), "Hedge floor is 2.5s");
+        Check(Transcriber.DefaultHedgeDelay(15) == TimeSpan.FromMilliseconds(3250), "Hedge cutoff scales with audio length");
+        Check(Transcriber.DefaultHedgeDelay(3600) == TimeSpan.FromSeconds(10), "Hedge cutoff is capped");
+        Check(Math.Abs(Transcriber.EstimateAudioSeconds(new byte[6000], "mp3") - 1.0) < 0.001, "MP3 duration falls back to bitrate estimate");
+        var wavHeader = new byte[44 + 32000];
+        wavHeader[0] = (byte)'R'; wavHeader[1] = (byte)'I'; wavHeader[2] = (byte)'F'; wavHeader[3] = (byte)'F';
+        BitConverter.GetBytes(32036).CopyTo(wavHeader, 4);
+        "WAVEfmt ".ToCharArray().Select(c => (byte)c).ToArray().CopyTo(wavHeader, 8);
+        BitConverter.GetBytes(16).CopyTo(wavHeader, 16);
+        BitConverter.GetBytes((short)1).CopyTo(wavHeader, 20);
+        BitConverter.GetBytes((short)1).CopyTo(wavHeader, 22);
+        BitConverter.GetBytes(16000).CopyTo(wavHeader, 24);
+        BitConverter.GetBytes(32000).CopyTo(wavHeader, 28);
+        "data".ToCharArray().Select(c => (byte)c).ToArray().CopyTo(wavHeader, 36);
+        BitConverter.GetBytes(32000).CopyTo(wavHeader, 40);
+        Check(Math.Abs(Transcriber.EstimateAudioSeconds(wavHeader, "wav") - 1.0) < 0.001, "WAV duration parses from header");
+        var attempts = 0;
+        using var stalled = new HttpClient(new Handler(async (_, token) =>
+        {
+            if (Interlocked.Increment(ref attempts) == 1) await Task.Delay(TimeSpan.FromSeconds(30), token);
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"text\":\"Hedged\"}") };
+        }));
+        var hedged = new Transcriber(stalled) { HedgeDelay = _ => TimeSpan.FromMilliseconds(50) };
+        var hedgeMetrics = new SessionMetrics();
+        Check(await hedged.TranscribeAsync([1, 2, 3], "test-only", default, hedgeMetrics) == "Hedged", "Stalled first attempt loses to hedge");
+        Check(attempts == 2, "Hedge fires exactly one second request");
+        var hedge = hedgeMetrics.Snapshot().Hedges;
+        Check(hedge is [{ WinnerAttempt: 2, SavedMs: null }], "Hedge records the cutoff, winner, and cancelled loser");
+        Check(hedge[0].CutoffMs == 50 && hedge[0].WinnerMs >= 0 && hedge[0].LoserMs >= 50, "Hedge durations cover both attempts");
+        var fastCalls = 0;
+        using var fast = new HttpClient(new Handler((_, _) =>
+        {
+            Interlocked.Increment(ref fastCalls);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"text\":\"Prompt\"}") });
+        }));
+        Check(await new Transcriber(fast) { HedgeDelay = _ => TimeSpan.FromMilliseconds(50) }.TranscribeAsync([1], "test-only", default, apiMetrics) == "Prompt", "Fast attempt returns without hedging");
+        Check(fastCalls == 1, "No second request when first is prompt");
+        Check(apiMetrics.Snapshot().Hedges.Length == 0, "Prompt requests record no hedge");
     }
     private static void Desktop()
     {
@@ -223,8 +297,9 @@ internal static class Program
         Application.SetCompatibleTextRenderingDefault(false);
         Exception? failure = null;
         using var form = new Form { Text = "Local Whisper verification", Width = 400, Height = 180 };
+        var button = new Button { Dock = DockStyle.Top, Text = "No edit here" };
         var field = new TextBox { Dock = DockStyle.Fill, Multiline = true };
-        form.Controls.Add(field);
+        form.Controls.Add(button); form.Controls.Add(field);
         form.Shown += async (_, _) =>
         {
             IDataObject? original = Clipboard.GetDataObject();
@@ -249,6 +324,15 @@ internal static class Program
                     Check(field.Text == "Hello, ä¸–ç•Œ!", "Native paste inserts Unicode into focused field");
                     await Task.Delay(800);
                     Check(Clipboard.GetText() == "clipboard sentinel", "Previous clipboard restored");
+                    Check(await TargetContext.AcceptsTextAsync(form.Handle, default) is true, "Focused text field accepts paste");
+                    button.Focus();
+                    await Task.Delay(200);
+                    Check(await TargetContext.AcceptsTextAsync(form.Handle, default) is false, "Window without editable focus refuses paste");
+                    var refused = field.Text;
+                    Check(!await Paste.IntoAsync("nowhere to go", form.Handle, default, textTarget: TargetContext.AcceptsTextAsync), "Paste without editable focus is refused");
+                    Check(field.Text == refused, "Refused paste does not change text");
+                    field.Focus();
+                    await Task.Delay(200);
                 }
                 else Console.WriteLine("SKIP: Windows denied test-window focus; live paste requires an interactive launch.");
                 var before = field.Text;

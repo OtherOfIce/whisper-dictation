@@ -82,7 +82,17 @@ function renderHistory() {
     play.disabled = download.disabled = !entry.hasAudio;
     const copy = action('copy', 'Copy transcript', () => call('copy', { id: entry.id }).then(() => toast('Transcript copied')).catch(error => toast(error.message)));
     copy.disabled = !entry.text;
-    actions.append(play, download, copy, action('chart', 'Show performance', () => openPerformance(entry.id)), action('trash', 'Delete transcript', async () => {
+    actions.append(play, download, copy);
+    if (!entry.text && entry.hasAudio) {
+      const retry = action('refresh', 'Retry transcription', async () => {
+        retry.disabled = true;
+        try { await call('retranscribe', { id: entry.id }); toast('Transcript recovered'); }
+        catch (error) { toast(error.message); }
+        finally { retry.disabled = false; }
+      });
+      actions.append(retry);
+    }
+    actions.append(action('chart', 'Show performance', () => openPerformance(entry.id)), action('trash', 'Delete transcript', async () => {
       if (activeAudioId === entry.id) stopAudio();
       try { await call('delete', { id: entry.id }); toast('Transcript deleted'); } catch (error) { toast(error.message); }
     }));
@@ -119,7 +129,7 @@ function renderCosts(costs) {
   const fragment = document.createDocumentFragment();
   if (!activity) {
     const heading = document.createElement('span'); heading.className = 'cost-popover-heading'; heading.textContent = 'Complete breakdown unavailable'; fragment.append(heading);
-    const help = document.createElement('span'); help.textContent = 'Add an OpenRouter management key in Settings to read model costs from account activity.'; fragment.append(help);
+    const help = document.createElement('span'); help.textContent = 'Import OpenRouter activity in Settings to fill the local cost ledger.'; fragment.append(help);
     if (locallyRecorded) {
       const note = document.createElement('span'); note.className = 'cost-popover-note'; note.textContent = `${money(costs.voice + costs.cleanup, 5)} has been recorded locally, but this is only part of the total.`; fragment.append(note);
     }
@@ -137,7 +147,7 @@ function renderCosts(costs) {
     }
   }
   const note = document.createElement('span'); note.className = 'cost-popover-note';
-  note.textContent = "OpenRouter's last 30 completed days, plus costs recorded here today.";
+  note.textContent = "The last imported 30 completed days, plus costs recorded here today.";
   fragment.append(note);
   popover.replaceChildren(fragment);
 }
@@ -163,7 +173,6 @@ function renderSettings(settings) {
   $('lock-mode').checked = settings.lockMode !== false;
   $('transcription-model').value = settings.transcriptionModel || 'mai-transcribe-2-clean';
   $('cleanup-mode').value = settings.cleanupMode || 'off';
-  $('balance-key').placeholder = settings.hasBalanceKey ? 'Saved securely. Leave blank to keep it.' : 'Optional management key';
   $('dictionary-terms').value = Array.isArray(settings.dictionaryTerms) ? settings.dictionaryTerms.join('\n') : '';
 }
 $('lock-mode').onchange = async () => {
@@ -185,12 +194,22 @@ $('import-wispr').onclick = async () => {
     $('import-wispr-status').textContent = `${result.added} new term${result.added === 1 ? '' : 's'} imported.${skipped}`;
   } catch (error) { toast(error.message); } finally { button.disabled = false; }
 };
+$('import-costs').onclick = async () => {
+  const button = $('import-costs'); const field = $('management-key'); const managementKey = field.value.trim();
+  field.value = ''; $('import-costs-status').textContent = ''; button.disabled = true;
+  try {
+    const result = await call('importOpenRouterActivity', { managementKey });
+    renderCosts(result.costs);
+    $('import-costs-status').textContent = `${result.rows} cost row${result.rows === 1 ? '' : 's'} imported. Delete the temporary key from OpenRouter.`;
+  } catch (error) { toast(error.message); }
+  finally { button.disabled = false; }
+};
 $('settings-form').onsubmit = async event => {
   event.preventDefault(); const button = event.submitter; button.disabled = true;
   try {
     const dictionaryTerms = $('dictionary-terms').value.split(/\r?\n/).map(term => term.trim()).filter(Boolean);
-    const settings = await call('saveSettings', { apiKey: $('api-key').value, balanceKey: $('balance-key').value, clearBalanceKey: $('clear-balance-key').checked, liveChunks: $('live-chunks').checked, lockMode: $('lock-mode').checked, transcriptionModel: $('transcription-model').value, cleanupMode: $('cleanup-mode').value, dictionaryTerms });
-    $('api-key').value = ''; $('balance-key').value = ''; $('clear-balance-key').checked = false;
+    const settings = await call('saveSettings', { apiKey: $('api-key').value, liveChunks: $('live-chunks').checked, lockMode: $('lock-mode').checked, transcriptionModel: $('transcription-model').value, cleanupMode: $('cleanup-mode').value, dictionaryTerms });
+    $('api-key').value = '';
     renderSettings(settings); $('save-message').textContent = 'Settings saved';
   } catch (error) { toast(error.message); } finally { button.disabled = false; }
 };
@@ -208,8 +227,8 @@ $('close-drawer').onclick = closeDrawer; $('drawer-backdrop').onclick = closeDra
 document.addEventListener('keydown', event => { if (event.key === 'Escape') closeDrawer(); });
 $('include-recording').onchange = renderPerformance;
 $('export-timings').onclick = () => call('exportTimings', { id: selectedId }).catch(error => toast(error.message));
-async function renderPerformance() {
-  const id = selectedId;
+function formatDuration(ms) { return ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${Math.round(ms)} ms`; }
+async function renderPerformance() {  const id = selectedId;
   if (!id) return;
   try {
     const result = await call('timings', { id, includeRecording: $('include-recording').checked });
@@ -219,7 +238,7 @@ async function renderPerformance() {
     $('latency-caption').textContent = metrics.pasteMs != null ? 'From finishing your recording to sending the paste shortcut.' : metrics.outcome;
     const fragment = document.createDocumentFragment();
     for (const row of chart.rows) {
-      const element = document.createElement('div'); element.className = 'timing-row' + (row.name.includes('Wait') ? ' wait' : ''); element.dataset.stage = row.name;
+      const element = document.createElement('div'); element.className = 'timing-row' + (row.name.includes('Transcribe audio') || row.name.includes('Wait for response') ? ' wait' : ''); element.dataset.stage = row.name;
       const label = document.createElement('div'); label.className = 'timing-name'; label.title = row.name; label.textContent = row.name.replace('Part 1 · ', '');
       const track = document.createElement('div'); track.className = 'timing-track';
       const bar = document.createElement('div'); bar.className = 'timing-bar'; const duration = Math.max(1, chart.duration);
@@ -230,6 +249,11 @@ async function renderPerformance() {
     $('timings').replaceChildren(fragment);
     $('timing-note').textContent = $('include-recording').checked ? 'Full session, including time spent speaking and clipboard cleanup.' : `Recording time and clipboard cleanup are excluded.${chart.completedEarly ? ` ${chart.completedEarly} stages finished before Stop.` : ''}`;
     const facts = [['Audio length', `${metrics.audioSeconds.toFixed(1)} s`], ['Request size', `${(metrics.requestBytes / 1024).toFixed(0)} KB`], ['Longest UI gap', `${metrics.maxUiGapMs.toFixed(0)} ms`]];
+    for (const hedge of metrics.hedges ?? []) {
+      facts.push(['Hedge fired', `after ${formatDuration(hedge.cutoffMs)}`]);
+      if (hedge.savedMs != null) facts.push(['Hedge saved', `≈ ${formatDuration(hedge.savedMs)} — attempt ${hedge.winnerAttempt} answered in ${formatDuration(hedge.winnerMs)}, the other took ${formatDuration(hedge.loserMs)}`]);
+      else facts.push(['Hedge winner', `attempt ${hedge.winnerAttempt} answered in ${formatDuration(hedge.winnerMs)} — the other ran ${formatDuration(hedge.loserMs ?? hedge.cutoffMs)} with no response`]);
+    }
     $('timing-facts').replaceChildren(...facts.map(([name, text]) => { const item = document.createElement('div'); item.textContent = name; const value = document.createElement('strong'); value.textContent = text; item.append(value); return item; }));
   } catch (error) { toast(error.message); }
 }

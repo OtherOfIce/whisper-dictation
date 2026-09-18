@@ -9,8 +9,11 @@ internal sealed class TranscriptionSession(HttpClient http, string key, SessionM
     private readonly List<Task<string>> chunks = [];
     private readonly SemaphoreSlim slots = new(2);
     private readonly object gate = new();
-    private int completed;
+    private int completed, failed;
+    private string? lastError;
     public int Completed => Volatile.Read(ref completed);
+    public int Failed => Volatile.Read(ref failed);
+    public string? LastError { get { lock (gate) return lastError; } }
     public int Count { get { lock (gate) return chunks.Count; } }
     public void EnqueuePcm(byte[] pcm)
     {
@@ -39,9 +42,20 @@ internal sealed class TranscriptionSession(HttpClient http, string key, SessionM
                         }
                     }
                     token.ThrowIfCancellationRequested();
-                    var result = await new Transcriber(http).TranscribeAsync(encoded.Bytes, key, token, metrics, prefix, encoded.Format, dictionary, transcriptionModel).ConfigureAwait(false);
-                    Interlocked.Increment(ref completed);
-                    return result;
+                    try
+                    {
+                        var result = await new Transcriber(http).TranscribeAsync(encoded.Bytes, key, token, metrics, prefix, encoded.Format, dictionary, transcriptionModel).ConfigureAwait(false);
+                        Interlocked.Increment(ref completed);
+                        return result;
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        // TranscribeAsync already retried transient errors. Keep the
+                        // successful chunks instead of throwing the whole recording away.
+                        Interlocked.Increment(ref failed);
+                        lock (gate) lastError = ex.Message;
+                        return "";
+                    }
                 }
                 finally { slots.Release(); }
             }, token));
@@ -56,6 +70,9 @@ internal sealed class TranscriptionSession(HttpClient http, string key, SessionM
         lock (gate) pending = chunks.ToArray();
         var results = await Task.WhenAll(pending).ConfigureAwait(false);
         token.ThrowIfCancellationRequested();
-        return string.Join(" ", results.Where(t => !string.IsNullOrWhiteSpace(t)));
+        var text = string.Join(" ", results.Where(t => !string.IsNullOrWhiteSpace(t)));
+        if (text.Length == 0 && Volatile.Read(ref failed) > 0)
+            throw new HttpRequestException(LastError ?? "Transcription failed. Try again.");
+        return text;
     }
 }

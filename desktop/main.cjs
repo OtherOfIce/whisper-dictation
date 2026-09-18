@@ -16,17 +16,17 @@ if (!app.requestSingleInstanceLock()) { app.quit(); }
 else {
   let main, overlay, tray, engine, quitting = false, state = { mode: 'Idle' }, history = [], historyError = false;
   const testOverlayActions = [];
-  let nextId = 0, settings = {}, balance = null, refreshPromise, saveQueue = Promise.resolve();
+  let nextId = 0, settings = {}, balance = null, costLedger = null, refreshPromise, saveQueue = Promise.resolve();
   const pending = new Map();
-  const currentCosts = () => getDisplayedCostStats(history, balance);
+  const currentCosts = () => getDisplayedCostStats(history, costLedger);
   const historyPath = () => path.join(app.getPath('userData'), 'history.sqlite');
   const historyStore = new HistoryStore(historyPath(), safeStorage, path.join(app.getPath('userData'), 'history.bin'));
   const broadcast = value => { for (const win of [main, overlay]) if (win && !win.isDestroyed()) win.webContents.send('event', value); };
-  function send(method, params = {}) {
+  function send(method, params = {}, timeoutMs = 16000) {
     return new Promise((resolve, reject) => {
       if (!engine || engine.killed || !engine.stdin.writable) return reject(new Error('Dictation engine is unavailable. Restart the app.'));
       const id = ++nextId;
-      const timeout = setTimeout(() => { pending.delete(id); reject(new Error('The request timed out. Please try again.')); }, 16000);
+      const timeout = setTimeout(() => { pending.delete(id); reject(new Error('The request timed out. Please try again.')); }, timeoutMs);
       pending.set(id, { resolve, reject, timeout });
       engine.stdin.write(JSON.stringify({ id, method, params }) + '\n');
     });
@@ -40,6 +40,32 @@ else {
   function notify(message) {
     broadcast({ type: 'notice', message });
     if (!testMode && !main?.isFocused()) new Notification({ title: 'Local Whisper', body: message }).show();
+  }
+  const latestText = () => history.find(entry => entry.text)?.text || '';
+  function copyLatest() {
+    const text = latestText();
+    if (!text) throw new Error('No transcript to copy yet.');
+    clipboard.writeText(text); return true;
+  }
+  function updateTrayMenu() {
+    if (!tray) return;
+    const hasTranscript = history.some(entry => entry.text);
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Open Local Whisper', click: () => showMain() },
+      { label: 'Settings', click: () => showMain('settings') },
+      { type: 'separator' },
+      { label: 'Copy last transcript', enabled: hasTranscript, click: () => { try { copyLatest(); broadcast({ type: 'notice', message: 'Last transcript copied' }); } catch {} } },
+      { type: 'separator' },
+      { label: 'Quit', click: () => app.quit() }
+    ]));
+  }
+  function notifyCopy(message, textToCopy) {
+    broadcast({ type: 'notice', message });
+    if (testMode || main?.isFocused() || !textToCopy) return;
+    const note = new Notification({ title: 'Local Whisper', body: message, actions: [{ type: 'button', text: 'Copy transcript' }] });
+    note.on('action', () => clipboard.writeText(textToCopy));
+    note.on('click', () => { clipboard.writeText(textToCopy); showMain('history'); });
+    note.show();
   }
   function persist(audioById) {
     if (testMode) return;
@@ -77,6 +103,15 @@ else {
       const recording = typeof audio === 'string' ? Buffer.from(audio, 'base64') : null;
       const entry = { ...rest, hasAudio: recording !== null };
       history.unshift(entry);
+      updateTrayMenu();
+      if (entry.text && entry.metrics?.outcome === 'Saved to history') {
+        let copied = true;
+        try { clipboard.writeText(entry.text); }
+        catch { copied = false; }
+        notifyCopy(copied
+          ? "Couldn't paste. Your transcript was copied to the clipboard."
+          : "Couldn't paste, and your transcript could not be copied automatically.", entry.text);
+      }
       persist(recording ? new Map([[entry.id, { bytes: recording, format: audioFormat || 'wav' }]]) : undefined);
       refreshCredits(); broadcast({ type: 'stats', stats: getWordStats(history), costs: currentCosts() });
       event = { ...event, entry };
@@ -86,7 +121,9 @@ else {
       if (entry) { entry.metrics = event.metrics; persist(); }
     }
     if (event.type === 'needsSettings') showMain('settings');
-    if (event.type === 'notice') { notify(event.message); return; }
+    // Legacy engine binaries emit this notice before the transcript arrives; the
+    // transcript handler above already copies the text and shows the Copy action.
+    if (event.type === 'notice') { if (event.message === 'Focus changed. Your transcript is ready in History.') return; notify(event.message); return; }
     broadcast(event);
   }
   async function refreshCredits() {
@@ -145,13 +182,25 @@ else {
     switch (method) {
       case 'initial': return { history, settings, balance, state, historyError, stats: getWordStats(history), costs: currentCosts() };
       case 'refreshCredits': return refreshCredits();
+      case 'importOpenRouterActivity': {
+        if (!params || typeof params.managementKey !== 'string' || !params.managementKey.trim() || params.managementKey.length > 1024)
+          throw new Error('Enter a temporary OpenRouter management key.');
+        let imported;
+        try { imported = testMode ? require('./tests/fixtures.cjs').activityImport : await send('importActivity', { managementKey: params.managementKey.trim() }, 30000); }
+        finally { params.managementKey = ''; }
+        await historyStore.replaceCostLedger(imported);
+        costLedger = imported;
+        const costs = currentCosts();
+        broadcast({ type: 'stats', stats: getWordStats(history), costs });
+        return { importedAt: imported.importedAt, through: imported.through, rows: imported.rows.length, costs };
+      }
       case 'setLockMode': {
         if (!params || typeof params.lockMode !== 'boolean') throw new Error('Invalid settings.');
         settings = testMode ? { ...settings, lockMode: params.lockMode } : await send('setLockMode', params);
         broadcast({ type: 'settings', settings }); return settings;
       }
       case 'saveSettings': {
-        if (!params || typeof params.liveChunks !== 'boolean' || typeof params.lockMode !== 'boolean' || ['apiKey', 'balanceKey'].some(k => params[k] != null && (typeof params[k] !== 'string' || params[k].length > 1024))) throw new Error('Invalid settings.');
+        if (!params || typeof params.liveChunks !== 'boolean' || typeof params.lockMode !== 'boolean' || (params.apiKey != null && (typeof params.apiKey !== 'string' || params.apiKey.length > 1024))) throw new Error('Invalid settings.');
         if (!['gpt-transcribe', 'mai-transcribe-2-verbatim', 'mai-transcribe-2-clean'].includes(params.transcriptionModel)) throw new Error('Invalid transcription model.');
         if (!['off', 'luna', 'luna-fast'].includes(params.cleanupMode)) throw new Error('Invalid cleanup mode.');
         validateDictionaryTerms(params.dictionaryTerms);
@@ -172,6 +221,7 @@ else {
         const entry = history.find(x => x.id === params.id); if (!entry) throw new Error('Transcript no longer exists.');
         await clipboard.writeText(entry.text); return true;
       }
+      case 'copyLast': return copyLatest();
       case 'audio': {
         const entry = history.find(x => x.id === params.id); if (!entry) throw new Error('Transcript no longer exists.');
         if (!entry.hasAudio) throw new Error('This transcript has no saved recording.');
@@ -189,7 +239,15 @@ else {
         if (result.canceled) return false;
         await fs.writeFile(result.filePath, recording.bytes); return true;
       }
-      case 'delete': history = history.filter(x => x.id !== params.id); await saveHistory(); broadcast({ type: 'history', history }); broadcast({ type: 'stats', stats: getWordStats(history), costs: currentCosts() }); return true;
+      case 'delete': history = history.filter(x => x.id !== params.id); await saveHistory(); updateTrayMenu(); broadcast({ type: 'history', history }); broadcast({ type: 'stats', stats: getWordStats(history), costs: currentCosts() }); return true;
+      case 'retranscribe': {
+        const entry = history.find(x => x.id === params.id); if (!entry) throw new Error('Transcript no longer exists.');
+        const updated = testMode ? { id: entry.id, text: 'Retried transcript.', rawText: 'Retried transcript.', metrics: entry.metrics } : await send('retranscribe', { id: params.id }, 180000);
+        entry.text = updated.text; entry.rawText = updated.rawText; entry.metrics = updated.metrics;
+        updateTrayMenu(); await saveHistory();
+        broadcast({ type: 'history', history }); broadcast({ type: 'stats', stats: getWordStats(history), costs: currentCosts() });
+        return true;
+      }
       case 'timings': {
         const entry = history.find(x => x.id === params.id); if (!entry) return null;
         return { metrics: entry.metrics, chart: projectTimings(entry.metrics, params.includeRecording === true) };
@@ -217,10 +275,10 @@ else {
   });
   app.whenReady().then(async () => {
     if (!testMode) {
-      try { history = await historyStore.read(); }
+      try { history = await historyStore.read(); costLedger = await historyStore.readCostLedger(); }
       catch { historyError = true; }
     } else {
-      ({ history, settings, balance } = require('./tests/fixtures.cjs'));
+      ({ history, settings, balance, costLedger } = require('./tests/fixtures.cjs'));
     }
     const webPreferences = { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false };
     main = new BrowserWindow({ width: 1220, height: 820, minWidth: 850, minHeight: 600, frame: false, backgroundColor: '#f5f4f0', show: false, webPreferences });
@@ -233,7 +291,7 @@ else {
     if (!testMode) {
       const icon = nativeImage.createFromPath(path.join(__dirname, 'assets', 'tray.png'));
       tray = new Tray(icon); tray.setToolTip('Local Whisper');
-      tray.setContextMenu(Menu.buildFromTemplate([{ label: 'Open Local Whisper', click: () => showMain() }, { label: 'Settings', click: () => showMain('settings') }, { type: 'separator' }, { label: 'Quit', click: () => app.quit() }]));
+      updateTrayMenu();
       tray.on('double-click', () => showMain());
       startEngine();
       setInterval(() => { if (main.isVisible()) { refreshCredits(); broadcast({ type: 'stats', stats: getWordStats(history), costs: currentCosts() }); } }, 60000).unref();

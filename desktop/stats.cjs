@@ -44,8 +44,9 @@ function summarizeCosts(rows) {
   let voice = 0, cleanup = 0, voiceCount = 0, cleanupCount = 0;
   for (const cost of rows) {
     if (!cost || !['voice', 'cleanup'].includes(cost.category) || typeof cost.model !== 'string' || !Number.isFinite(cost.amount) || cost.amount < 0) continue;
-    if (cost.category === 'voice') { voice += cost.amount; voiceCount++; }
-    else { cleanup += cost.amount; cleanupCount++; }
+    const count = Number.isSafeInteger(cost.requests) && cost.requests >= 0 ? cost.requests : 1;
+    if (cost.category === 'voice') { voice += cost.amount; voiceCount += count; }
+    else { cleanup += cost.amount; cleanupCount += count; }
     const key = `${cost.category}\0${cost.model}`;
     const current = models.get(key) || { category: cost.category, model: cost.model, amount: 0 };
     current.amount += cost.amount; models.set(key, current);
@@ -62,12 +63,12 @@ function getCostStats(history, since = null) {
   return summarizeCosts(rows);
 }
 
-function getDisplayedCostStats(history, balance, now = new Date()) {
-  if (!Array.isArray(balance?.costs)) return { ...getCostStats(history), source: 'history' };
+function getDisplayedCostStats(history, ledger, now = new Date()) {
+  if (!Array.isArray(ledger?.rows)) return { ...getCostStats(history), source: 'history' };
   const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const remote = balance.costs;
+  const remote = ledger.rows;
   const localToday = getCostStats(history, today).models;
-  return { ...summarizeCosts([...remote, ...localToday]), source: 'activity', through: balance.costsThrough };
+  return { ...summarizeCosts([...remote, ...localToday]), source: 'activity', through: ledger.through, importedAt: ledger.importedAt };
 }
 
 module.exports = { countWords, getWordStats, getCostStats, getDisplayedCostStats };

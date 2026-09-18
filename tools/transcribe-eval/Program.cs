@@ -12,6 +12,9 @@ var source = Argument(args, "--source") ?? @"C:\Users\Liam\Downloads\WhiperFlow"
 var output = Argument(args, "--output") ?? "artifacts/transcribe-eval-gpt-transcribe.json";
 var model = Argument(args, "--model") ?? Transcriber.Model;
 var style = Argument(args, "--style");
+var provider = Argument(args, "--provider");
+var language = Argument(args, "--language");
+var locales = Argument(args, "--locales");
 var sampleId = Argument(args, "--sample");
 var parallelism = int.TryParse(Argument(args, "--parallelism"), out var configuredParallelism)
     ? configuredParallelism
@@ -22,6 +25,8 @@ var pricePerHour = decimal.TryParse(Argument(args, "--price-per-hour"), out var 
     : model switch
     {
         "microsoft/mai-transcribe-2" => 0.10m,
+        "openai/whisper-large-v3-turbo" => 0.04m,
+        "openai/whisper-large-v3" => 0.04m,
         MuseModel => 0.18m,
         _ => 0.27m
     };
@@ -81,7 +86,7 @@ if (string.IsNullOrWhiteSpace(key))
 
 var results = new SampleResult[pairs.Length];
 
-Console.WriteLine($"Transcription eval: model={model} style={style ?? "default"} pairs={pairs.Length} parallelism={parallelism}");
+Console.WriteLine($"Transcription eval: model={model} style={style ?? "default"} provider={provider ?? "auto"} language={language ?? "auto"} locales={locales ?? "auto"} pairs={pairs.Length} parallelism={parallelism}");
 Console.WriteLine($"References: {(reviewedReferenceMode ? "reviewed canonicals" : "provisional Wispr output")}; skipped-unreviewed={skippedUnreviewed}; equivalence-policy={equivalences.Description}");
 Console.WriteLine("Each file is sent once. The locally saved key is never printed or written to the report.");
 
@@ -105,7 +110,7 @@ async Task<SampleResult> Evaluate(Sample pair)
         using var capture = new UsageCaptureHandler(new HttpClientHandler());
         using var http = new HttpClient(capture) { Timeout = Timeout.InfiniteTimeSpan };
         var requestWatch = Stopwatch.StartNew();
-        var transcript = await Transcribe(http, encoded.Bytes, encoded.Format, key, model, style, dictionaryTerms);
+        var transcript = await Transcribe(http, encoded.Bytes, encoded.Format, key, model, style, dictionaryTerms, provider, language, locales);
         requestWatch.Stop();
 
         var distance = WordDistance(reference, transcript, equivalences);
@@ -232,7 +237,7 @@ static string[] ReadDictionary(string path)
 }
 
 static async Task<string> Transcribe(HttpClient http, byte[] audio, string format, string key, string model, string? style,
-    IReadOnlyList<string> dictionaryTerms)
+    IReadOnlyList<string> dictionaryTerms, string? provider = null, string? language = null, string? locales = null)
 {
     using var request = new HttpRequestMessage(HttpMethod.Post, "https://openrouter.ai/api/v1/audio/transcriptions");
     request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
@@ -242,35 +247,41 @@ static async Task<string> Transcribe(HttpClient http, byte[] audio, string forma
         ["model"] = model,
         ["input_audio"] = new { data = Convert.ToBase64String(audio), format }
     };
+    if (!string.IsNullOrWhiteSpace(language))
+        payload["language"] = language!;
+    Dictionary<string, object>? providerOptions = null;
     if (model == Transcriber.MaiModel)
     {
         var azure = new Dictionary<string, object>();
         if (style is not null)
             azure["enhancedMode"] = new { modelOptions = new { transcribeStyle = style } };
+        if (!string.IsNullOrWhiteSpace(locales))
+            azure["locales"] = locales.Split(',').Select(part => part.Trim()).Where(part => part.Length > 0).ToArray();
         if (dictionaryTerms.Count > 0)
             azure["phraseList"] = new { phrases = dictionaryTerms };
         if (azure.Count > 0)
-            payload["provider"] = new
-            {
-                options = new { azure }
-            };
+            providerOptions = new Dictionary<string, object> { ["azure"] = azure };
     }
     else if (model == MuseModel && dictionaryTerms.Count > 0)
-        payload["provider"] = new
-        {
-            options = new
-            {
-                meta = new { keywords = dictionaryTerms }
-            }
-        };
+        providerOptions = new Dictionary<string, object> { ["meta"] = new { keywords = dictionaryTerms } };
     else if (dictionaryTerms.Count > 0)
-        payload["provider"] = new
+    {
+        providerOptions = new Dictionary<string, object> { ["openai"] = new { keywords = dictionaryTerms } };
+        if (model is "openai/whisper-large-v3-turbo" or "openai/whisper-large-v3")
+            providerOptions["groq"] = new { prompt = "Expected vocabulary: " + string.Join(", ", dictionaryTerms) };
+    }
+    if (!string.IsNullOrWhiteSpace(provider) || providerOptions is not null)
+    {
+        var providerPayload = new Dictionary<string, object>();
+        if (!string.IsNullOrWhiteSpace(provider))
         {
-            options = new
-            {
-                openai = new { keywords = dictionaryTerms }
-            }
-        };
+            providerPayload["order"] = new[] { provider! };
+            providerPayload["allow_fallbacks"] = false;
+        }
+        if (providerOptions is not null)
+            providerPayload["options"] = providerOptions;
+        payload["provider"] = providerPayload;
+    }
     request.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(payload));
     request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
     using var response = await http.SendAsync(request);

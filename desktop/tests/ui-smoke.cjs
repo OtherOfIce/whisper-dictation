@@ -15,6 +15,13 @@ exports.run = async ({ main, overlay, app, engineEvent, testOverlayActions }) =>
   assert.deepEqual(await new HistoryStore(store.file, safeStorage).readAudio(history[0].id), { bytes: wav, format: 'wav' });
   assert(!(await fs.readFile(store.file)).includes(Buffer.from(history[0].text)));
   assert((await fs.readFile(store.file)).includes(wav));
+  const firstLedger = { through: '2026-09-14T00:00:00Z', importedAt: '2026-09-15T12:00:00Z', rows: [
+    { date: '2026-09-14', category: 'voice', model: 'microsoft/mai-transcribe-2', provider: 'Azure', endpoint: 'ep-1', amount: 0.01, requests: 4 }
+  ] };
+  await store.replaceCostLedger(firstLedger);
+  assert.deepEqual(await new HistoryStore(store.file, safeStorage).readCostLedger(), firstLedger);
+  await store.replaceCostLedger({ ...firstLedger, rows: [{ ...firstLedger.rows[0], amount: 0.02 }] });
+  assert.equal((await store.readCostLedger()).rows[0].amount, 0.02);
   const legacyFile = path.join(directory, 'legacy-history.bin');
   const migratedFile = path.join(directory, 'migrated-history.sqlite');
   await fs.rm(migratedFile, { force: true });
@@ -34,7 +41,7 @@ exports.run = async ({ main, overlay, app, engineEvent, testOverlayActions }) =>
   await evaluate('document.querySelector(".cost-info").focus()');
   assert.equal(await evaluate('getComputedStyle(document.getElementById("cost-model-breakdown")).display'), 'grid');
   assert((await evaluate('document.getElementById("cost-model-breakdown").textContent')).includes('MAI-Transcribe-2'));
-  assert((await evaluate('document.getElementById("cost-model-breakdown").textContent')).includes('last 30 completed days'));
+  assert((await evaluate('document.getElementById("cost-model-breakdown").textContent')).includes('last imported 30 completed days'));
   engineEvent({ type: 'stats', stats: { total: 83, today: 83, last7Days: 83 }, costs: {
     voice: 0.0042, cleanup: 0.0008, voiceCount: 4, cleanupCount: 2, source: 'history',
     models: [{ category: 'voice', model: 'microsoft/mai-transcribe-2', amount: 0.0042 }, { category: 'cleanup', model: 'openai/gpt-5.6-luna', amount: 0.0008 }]
@@ -42,7 +49,7 @@ exports.run = async ({ main, overlay, app, engineEvent, testOverlayActions }) =>
   await wait(50);
   assert.equal(await evaluate('document.getElementById("cost-voice").textContent'), '—');
   assert.equal(await evaluate('document.getElementById("cost-cleanup").textContent'), '—');
-  assert((await evaluate('document.getElementById("cost-model-breakdown").textContent')).includes('management key'));
+  assert((await evaluate('document.getElementById("cost-model-breakdown").textContent')).includes('Import OpenRouter activity'));
   assert(!overlay.isVisible());
   await fs.writeFile(path.join(directory, 'history.png'), (await main.webContents.capturePage()).toPNG());
   await evaluate(`document.querySelector('[aria-label="Show performance"]').click()`); await wait(200);
@@ -57,6 +64,17 @@ exports.run = async ({ main, overlay, app, engineEvent, testOverlayActions }) =>
   await evaluate(`document.querySelector('[aria-label="Copy transcript"]').click()`); await wait(100);
   assert.equal(await evaluate('document.getElementById("toast").textContent'), 'Transcript copied');
   assert.equal(await clipboard.readText(), history[1].text);
+  await clipboard.writeText('sentinel-before-paste');
+  engineEvent({ type: 'transcript', entry: { id: 'pasted-ok', text: 'Pasted into the focused field.', metrics: { ...history[0].metrics, outcome: 'Pasted' } } });
+  await wait(100);
+  assert.equal(await clipboard.readText(), 'sentinel-before-paste');
+  engineEvent({ type: 'transcript', entry: { id: 'focus-lost', text: 'Focus moved before paste.', metrics: { ...history[0].metrics, outcome: 'Saved to history' } } });
+  await wait(100);
+  assert.equal(await clipboard.readText(), 'Focus moved before paste.');
+  assert.equal(await evaluate('document.getElementById("toast").textContent'), "Couldn't paste. Your transcript was copied to the clipboard.");
+  await clipboard.writeText('sentinel-before-copylast');
+  assert.equal(await evaluate("window.whisper.call('copyLast')"), true);
+  assert.equal(await clipboard.readText(), 'Focus moved before paste.');
   await clipboard.writeText(previousClipboard);
   await evaluate('document.querySelector("[data-view=settings]").click()');
   assert.equal(await evaluate('document.getElementById("lock-mode").checked'), true);
@@ -67,6 +85,13 @@ exports.run = async ({ main, overlay, app, engineEvent, testOverlayActions }) =>
   assert.equal(await evaluate('document.getElementById("transcription-model").value'), 'mai-transcribe-2-clean');
   assert.equal(await evaluate('document.getElementById("cleanup-mode").value'), 'off');
   assert.equal(await evaluate('document.getElementById("dictionary-terms").value'), '');
+  await evaluate(`document.getElementById('management-key').value='test-management-key'; document.getElementById('import-costs').click()`);
+  await wait(100);
+  assert.equal(await evaluate('document.getElementById("management-key").value'), '');
+  assert((await evaluate('document.getElementById("import-costs-status").textContent')).includes('Delete the temporary key'));
+  assert(!(await fs.readFile(path.join(app.getPath('userData'), 'history.sqlite'))).includes(Buffer.from('test-management-key')));
+  assert.equal(await evaluate('document.getElementById("cost-voice").textContent'), '$0.0266');
+  assert.equal(await evaluate('document.getElementById("cost-cleanup").textContent'), '$0.0054');
   await evaluate(`document.getElementById("dictionary-terms").value="Acme Corp\\n  Maya's project  \\n\\nmeeting notes"; document.getElementById("settings-form").requestSubmit(document.querySelector("[type=submit]"))`);
   await wait(100);
   assert.deepEqual(await evaluate("window.whisper.call('initial').then(x => x.settings.dictionaryTerms)"), ['Acme Corp', "Maya's project", 'meeting notes']);

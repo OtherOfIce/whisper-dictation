@@ -54,16 +54,16 @@ test('combines OpenRouter activity with locally recorded costs from the current 
     { metrics: { started: '2026-09-15T10:00:00Z', costs: [{ category: 'voice', model: 'microsoft/mai-transcribe-2', amount: 0.002 }] } },
     { metrics: { started: '2026-09-14T10:00:00Z', costs: [{ category: 'voice', model: 'microsoft/mai-transcribe-2', amount: 9 }] } }
   ];
-  const balance = { costsThrough: '2026-09-14T00:00:00Z', costs: [
+  const ledger = { through: '2026-09-14T00:00:00Z', importedAt: '2026-09-15T11:00:00Z', rows: [
     { category: 'voice', model: 'microsoft/mai-transcribe-2', amount: 0.01 },
     { category: 'cleanup', model: 'openai/gpt-5.6-luna', amount: 0.003 }
   ] };
-  assert.deepEqual(getDisplayedCostStats(history, balance, new Date('2026-09-15T12:00:00Z')), {
+  assert.deepEqual(getDisplayedCostStats(history, ledger, new Date('2026-09-15T12:00:00Z')), {
     voice: 0.012, cleanup: 0.003, voiceCount: 2, cleanupCount: 1,
     models: [
       { category: 'cleanup', model: 'openai/gpt-5.6-luna', amount: 0.003 },
       { category: 'voice', model: 'microsoft/mai-transcribe-2', amount: 0.012 }
     ],
-    source: 'activity', through: '2026-09-14T00:00:00Z'
+    source: 'activity', through: '2026-09-14T00:00:00Z', importedAt: '2026-09-15T11:00:00Z'
   });
 });

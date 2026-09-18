@@ -79,11 +79,14 @@ internal sealed class GlobalShortcut : IDisposable
 
 internal static class Paste
 {
-    public static async Task<bool> IntoAsync(string text, nint target, CancellationToken cancellation, Action? onPasted = null, SessionMetrics? metrics = null)
+    public static async Task<bool> IntoAsync(string text, nint target, CancellationToken cancellation, Action? onPasted = null, SessionMetrics? metrics = null, Func<nint, CancellationToken, Task<bool?>>? textTarget = null)
     {
         for (var i = 0; Native.ModifiersDown && i < 100; i++) await Task.Delay(25, cancellation);
         cancellation.ThrowIfCancellationRequested();
         if (Native.ModifiersDown || target == 0 || Native.GetForegroundWindow() != target) return false;
+        // Refuse targets with no editable focus (desktop, non-editable windows). An inconclusive
+        // check (null) fails open so paste behavior is unchanged when UI Automation cannot tell.
+        if (textTarget is not null && await textTarget(target, cancellation) is false) return false;
         IDataObject? previous = null;
         try { previous = Clipboard.GetDataObject(); } catch (ExternalException) { }
         Clipboard.SetText(text);

@@ -58,8 +58,38 @@ changed `Astra medium` to `Hashirama`. The product should select dictionary term
 that are relevant to the current request instead of sending a large unrelated
 list.
 
-The other models were not rerun after the dictionary correction, so their
-initial results should not be compared directly with the curated Muse result.
+The initial results above should not be compared directly with the curated Muse
+result because they used the historical dictionaries. The next section reruns
+all three alternatives with the corrected dictionaries.
+
+## Corrected-dictionary comparison
+
+GPT Transcribe and both MAI Transcribe 2 styles were then rerun against the
+same corrected dictionaries used by the curated Muse run.
+
+| Model | Exact clips | S / D / I | Micro-WER | Macro-WER | Short-clip WER | Long-clip WER | Reported cost |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| MAI Transcribe 2 clean | 21 / 30 | 7 / 3 / 23 | 3.88% | 3.07% | 2.91% | 4.13% | $0.012694 |
+| MAI Transcribe 2 verbatim | 20 / 30 | 7 / 3 / 30 | 4.71% | 3.50% | 2.91% | 5.16% | $0.012694 |
+| GPT Transcribe | 16 / 30 | 17 / 3 / 28 | 5.65% | 5.22% | 6.40% | 5.46% | $0.034275 |
+| Muse Voice Transcribe 1.0 | 15 / 30 | 15 / 7 / 28 | 5.88% | 5.51% | 5.23% | 6.05% | $0.021980 |
+
+MAI clean beat MAI verbatim on four clips and tied it on 26. It was never
+worse. Both modes had the same seven substitutions and three deletions. The
+verbatim mode's entire deficit was seven additional insertions, mainly spoken
+fillers and false starts that clean mode removed.
+
+MAI clean beat GPT Transcribe on seven clips, tied it on 21, and lost on two.
+GPT made 17 substitutions versus MAI clean's seven. MAI clean also cost 63%
+less on this run. The reviewed references favor cleaned dictation, but that is
+also the product behavior being tested here.
+
+The corrected vocabulary helped both model families, but neither treated hints
+as guaranteed spelling. MAI clean recognized `Hashirama`, `Raikage`, and
+`Onoki`, while GPT rendered `Onoki` as `a Noki`. MAI returned `Wisper Flow` in
+one product clip, but that spelling is acceptable here. `Wispr Flow` was an
+automatically imported brand term rather than vocabulary the product should
+preserve, so it was removed from all 30 benchmark dictionaries after this run.
 
 ## Execution and latency caveat
 
@@ -83,6 +113,9 @@ artifacts/transcribe-eval-normal-current-mai-verbatim.json
 artifacts/transcribe-eval-normal-current-gpt-transcribe.json
 artifacts/transcribe-eval-normal-current-muse-hinted.json
 artifacts/transcribe-eval-normal-current-muse-curated-dictionary.json
+artifacts/transcribe-eval-normal-curated-mai-clean.json
+artifacts/transcribe-eval-normal-curated-mai-verbatim.json
+artifacts/transcribe-eval-normal-curated-gpt-transcribe.json
 ```
 
 Run Muse again with:

@@ -6,6 +6,46 @@ namespace LocalWhisper;
 internal static class TargetContext
 {
     private static readonly TimeSpan CaptureTimeout = TimeSpan.FromMilliseconds(750);
+    private static readonly TimeSpan TargetCheckTimeout = TimeSpan.FromMilliseconds(300);
+
+    /// <summary>
+    ///  Whether the focused element looks like a text target inside <paramref name="targetWindow"/>.
+    ///  True allows paste, false refuses it, null means the check was inconclusive so the caller
+    ///  should fail open and paste anyway. Never throws for UI Automation failures; only an
+    ///  explicitly cancelled <paramref name="cancellation"/> propagates.
+    /// </summary>
+    public static async Task<bool?> AcceptsTextAsync(nint targetWindow, CancellationToken cancellation)
+    {
+        cancellation.ThrowIfCancellationRequested();
+        if (targetWindow == 0) return null;
+        var completion = new TaskCompletionSource<bool?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try { completion.TrySetResult(AcceptsText(AutomationElement.FocusedElement, targetWindow)); }
+            catch { completion.TrySetResult(null); }
+        }) { IsBackground = true, Name = "Local Whisper paste-target check" };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        timeout.CancelAfter(TargetCheckTimeout);
+        try { return await completion.Task.WaitAsync(timeout.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (!cancellation.IsCancellationRequested) { return null; }
+    }
+
+    private static bool? AcceptsText(AutomationElement? focused, nint targetWindow)
+    {
+        try
+        {
+            if (focused is null) return false;
+            if (focused.Current.IsPassword) return true;
+            if (!BelongsToWindow(focused, targetWindow)) return null;
+            if (focused.TryGetCurrentPattern(TextPattern.Pattern, out _)) return true;
+            if (focused.TryGetCurrentPattern(ValuePattern.Pattern, out var value) && value is ValuePattern text && !text.Current.IsReadOnly) return true;
+            return false;
+        }
+        catch { return null; }
+    }
 
     public static async Task<InsertionContext> CaptureAsync(nint targetWindow, CancellationToken cancellation)
     {

@@ -10,13 +10,11 @@ internal static class Settings
     private static readonly string DictionaryFile = Path.Combine(Folder, "dictionary.bin");
     public static string[] LoadDictionaryTerms() => Vocabulary.Load(DictionaryFile);
     public static void SaveDictionaryTerms(string[] terms) => Vocabulary.Save(DictionaryFile, terms);
-    private static readonly string BalanceKeyFile = Path.Combine(Folder, "balance-key.bin");
-    public static string LoadBalanceKey() => File.Exists(BalanceKeyFile) ? Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(BalanceKeyFile), null, DataProtectionScope.CurrentUser)) : "";
-    public static void SaveBalanceKey(string key)
+    public static void RemoveLegacyBalanceKey()
     {
-        Directory.CreateDirectory(Folder);
-        File.WriteAllBytes(BalanceKeyFile + ".tmp", ProtectedData.Protect(Encoding.UTF8.GetBytes(key), null, DataProtectionScope.CurrentUser));
-        File.Move(BalanceKeyFile + ".tmp", BalanceKeyFile, true);
+        var file = Path.Combine(Folder, "balance-key.bin");
+        if (File.Exists(file)) File.Delete(file);
+        if (File.Exists(file + ".tmp")) File.Delete(file + ".tmp");
     }
     private static readonly string LiveFile = Path.Combine(Folder, "live-chunks.txt");
     public static bool LiveChunks => File.Exists(LiveFile) && File.ReadAllText(LiveFile).Trim() == "true";

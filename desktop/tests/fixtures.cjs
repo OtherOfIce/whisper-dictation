@@ -9,7 +9,7 @@ const metrics = {
     { name: 'Part 1 · Prepare request', startMs: 18490, durationMs: 4 },
     { name: 'Part 1 · Connect / send request', startMs: 18494, durationMs: 14 },
     { name: 'Part 1 · Write audio to transport', startMs: 18508, durationMs: 16 },
-    { name: 'Part 1 · Wait for response headers', startMs: 18524, durationMs: 1231 },
+    { name: 'Part 1 · Transcribe audio', startMs: 18524, durationMs: 1231 },
     { name: 'Part 1 · Read / parse transcript', startMs: 19755, durationMs: 2 },
     { name: 'Paste / wait for released keys', startMs: 19757, durationMs: 3 },
     { name: 'Clipboard cleanup (after paste)', startMs: 19760, durationMs: 700 }
@@ -33,14 +33,23 @@ module.exports = {
       ...([0, 2].includes(i) ? [{ category: 'cleanup', model: 'openai/gpt-5.6-luna', amount: i === 0 ? 0.0003 : 0.0005 }] : [])
     ]
   } })),
-  settings: { hasKey: true, hasBalanceKey: true, liveChunks: false, lockMode: true, transcriptionModel: 'mai-transcribe-2-clean', cleanupMode: 'off', dictionaryTerms: [] },
+  settings: { hasKey: true, liveChunks: false, lockMode: true, transcriptionModel: 'mai-transcribe-2-clean', cleanupMode: 'off', dictionaryTerms: [] },
   balance: {
-    kind: 'account', remaining: 18.42, usage: 1.5832, usageDaily: .0642, message: 'OpenRouter account balance', updated: new Date().toISOString(),
-    costsThrough: new Date(Date.now() - 86400000).toISOString(),
-    costs: [
-      { category: 'voice', model: 'microsoft/mai-transcribe-2', amount: 0.012 },
-      { category: 'voice', model: 'openai/gpt-transcribe', amount: 0.005 },
-      { category: 'cleanup', model: 'openai/gpt-5.6-luna', amount: 0.003 }
+    kind: 'account', remaining: 18.42, usage: 1.5832, usageDaily: .0642, message: 'OpenRouter account balance', updated: new Date().toISOString()
+  },
+  costLedger: {
+    through: new Date(Date.now() - 86400000).toISOString(), importedAt: new Date().toISOString(),
+    rows: [
+      { date: '2026-09-14', category: 'voice', model: 'microsoft/mai-transcribe-2', provider: 'Azure', endpoint: 'voice-1', amount: 0.012, requests: 8 },
+      { date: '2026-09-14', category: 'voice', model: 'openai/gpt-transcribe', provider: 'OpenAI', endpoint: 'voice-2', amount: 0.005, requests: 3 },
+      { date: '2026-09-14', category: 'cleanup', model: 'openai/gpt-5.6-luna', provider: 'OpenAI', endpoint: 'luna-1', amount: 0.003, requests: 4 }
+    ]
+  },
+  activityImport: {
+    through: new Date(Date.now() - 86400000).toISOString(), importedAt: new Date().toISOString(),
+    rows: [
+      { date: '2026-09-14', category: 'voice', model: 'microsoft/mai-transcribe-2', provider: 'Azure', endpoint: 'voice-1', amount: 0.02, requests: 12 },
+      { date: '2026-09-14', category: 'cleanup', model: 'openai/gpt-5.6-luna', provider: 'OpenAI', endpoint: 'luna-1', amount: 0.004, requests: 6 }
     ]
   }
 };

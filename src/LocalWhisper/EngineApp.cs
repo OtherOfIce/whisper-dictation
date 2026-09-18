@@ -19,7 +19,9 @@ internal sealed class EngineApp : ApplicationContext
     private SessionMetrics? metrics;
     private IDisposable? recordingStage;
     private CancellationTokenSource? operation;
-    private string apiKey = "", balanceKey = "", cleanupMode = CleanupService.Off, transcriptionModel = TranscriptionModels.MaiClean, entryId = "";
+    private readonly Dictionary<string, (byte[] Audio, string TranscriptionModel, string[] Dictionary)> failedAudio = new();
+    private readonly LinkedList<string> failedOrder = new();
+    private string apiKey = "", cleanupMode = CleanupService.Off, transcriptionModel = TranscriptionModels.MaiClean, entryId = "";
     private string? processingPhase;
     private string[] dictionaryTerms = [];
     private nint target;
@@ -37,7 +39,9 @@ internal sealed class EngineApp : ApplicationContext
                 await Console.Out.FlushAsync();
             }
         });
-        try { apiKey = Settings.LoadKey(); balanceKey = Settings.LoadBalanceKey(); liveChunks = Settings.LiveChunks; lockMode = Settings.LockMode; cleanupMode = Settings.CleanupMode; transcriptionModel = Settings.TranscriptionModel; dictionaryTerms = Settings.LoadDictionaryTerms(); }
+        try { Settings.RemoveLegacyBalanceKey(); }
+        catch { Notify("The old saved management key could not be removed. Delete balance-key.bin from LocalWhisper's local app data folder."); }
+        try { apiKey = Settings.LoadKey(); liveChunks = Settings.LiveChunks; lockMode = Settings.LockMode; cleanupMode = Settings.CleanupMode; transcriptionModel = Settings.TranscriptionModel; dictionaryTerms = Settings.LoadDictionaryTerms(); }
         catch { Notify("Saved settings could not be read. Please open Settings."); }
         gesture = new Gesture(lockMode);
         if (!noHook)
@@ -79,7 +83,7 @@ internal sealed class EngineApp : ApplicationContext
             if (!exiting) dispatcher.BeginInvoke(ExitThread);
         });
     }
-    private object SettingsState() => new { hasKey = !string.IsNullOrWhiteSpace(apiKey), hasBalanceKey = !string.IsNullOrWhiteSpace(balanceKey), liveChunks, lockMode, cleanupMode, transcriptionModel, dictionaryTerms };
+    private object SettingsState() => new { hasKey = !string.IsNullOrWhiteSpace(apiKey), liveChunks, lockMode, cleanupMode, transcriptionModel, dictionaryTerms };
     private void Emit(object value) => output.Writer.TryWrite(value);
     private void Notify(string message) => Emit(new { type = "notice", message });
     private void PublishState() => Emit(new { type = "state", mode = cancelled || metrics?.Snapshot().PasteMs is not null ? "Idle" : gesture.Mode.ToString(), phase = processingPhase, level = recorder?.Level ?? 0, id = entryId, metrics = metrics?.Snapshot() });
@@ -94,7 +98,10 @@ internal sealed class EngineApp : ApplicationContext
             {
                 case "settings": result = SettingsState(); break;
                 case "state": PublishState(); break;
-                case "credits": result = await new Credits(http).GetAsync(apiKey, balanceKey); break;
+                case "credits": result = await new Credits(http).GetAsync(apiKey); break;
+                case "importActivity":
+                    var managementKey = command.GetProperty("params").GetProperty("managementKey").GetString() ?? "";
+                    result = await new Credits(http).ImportActivityAsync(apiKey, managementKey); break;
                 case "setLockMode":
                     if (gesture.Mode != CaptureMode.Idle) throw new InvalidOperationException("Finish recording before changing settings.");
                     var requestedLockMode = command.GetProperty("params").GetProperty("lockMode").GetBoolean();
@@ -110,8 +117,6 @@ internal sealed class EngineApp : ApplicationContext
                         nextDictionary = Vocabulary.Normalize(terms.EnumerateArray().Select(term => term.GetString()));
                     }
                     if (values.TryGetProperty("apiKey", out var key) && !string.IsNullOrWhiteSpace(key.GetString())) { Settings.SaveKey(key.GetString()!.Trim()); apiKey = Settings.LoadKey(); }
-                    if (values.TryGetProperty("balanceKey", out var balance) && !string.IsNullOrWhiteSpace(balance.GetString())) { Settings.SaveBalanceKey(balance.GetString()!.Trim()); balanceKey = Settings.LoadBalanceKey(); }
-                    if (values.TryGetProperty("clearBalanceKey", out var clear) && clear.GetBoolean()) { Settings.SaveBalanceKey(""); balanceKey = ""; }
                     if (values.TryGetProperty("liveChunks", out var live)) { liveChunks = live.GetBoolean(); Settings.SaveLiveChunks(liveChunks); }
                     if (values.TryGetProperty("lockMode", out var lockSetting)) { lockMode = lockSetting.GetBoolean(); Settings.SaveLockMode(lockMode); gesture.LockByDefault = lockMode; }
                     if (values.TryGetProperty("cleanupMode", out var cleanup)) { Settings.SaveCleanupMode(cleanup.GetString() ?? ""); cleanupMode = Settings.CleanupMode; }
@@ -125,6 +130,9 @@ internal sealed class EngineApp : ApplicationContext
                     var importedDictionary = Vocabulary.Normalize(importedTerms.EnumerateArray().Select(term => term.GetString()));
                     Settings.SaveDictionaryTerms(importedDictionary); dictionaryTerms = importedDictionary;
                     result = SettingsState(); break;
+                case "retranscribe":
+                    result = await RetranscribeAsync(command.GetProperty("params").GetProperty("id").GetString() ?? "");
+                    break;
                 case "cancel": Cancel(); break;
                 case "finish":
                     var finishParams = command.TryGetProperty("params", out var suppliedFinishParams) ? suppliedFinishParams : default;
@@ -134,7 +142,7 @@ internal sealed class EngineApp : ApplicationContext
             }
             Emit(new { type = "reply", id, result });
         }
-        catch (Exception ex) { Emit(new { type = "reply", id, error = ex is InvalidOperationException ? ex.Message : "The request failed. Check your key or connection and try again." }); }
+            catch (Exception ex) { Emit(new { type = "reply", id, error = ex is InvalidOperationException or HttpRequestException ? ex.Message : "The request failed. Check your key or connection and try again." }); }
     }
     private void Apply(GestureAction action, bool restoreTarget = false)
     {
@@ -190,6 +198,11 @@ internal sealed class EngineApp : ApplicationContext
             cancellation.Token.ThrowIfCancellationRequested();
             if (pcm.Length < 6400 && active.Count == 0) { outcome = "Too short"; return; }
             active.EnqueuePcm(pcm); rawText = await active.FinishAsync(); text = rawText;
+            if (active.Failed > 0)
+            {
+                if (audio is not null) KeepFailedAudio(id, audio, transcriptionModel, dictionaryTerms);
+                Notify("Some audio could not be transcribed after retries. The partial transcript was kept and the full recording was saved in History.");
+            }
             cancellation.Token.ThrowIfCancellationRequested();
             if (text.Length == 0) { outcome = "No speech"; return; }
             if (cleanupMode != CleanupService.Off)
@@ -213,12 +226,16 @@ internal sealed class EngineApp : ApplicationContext
             using (trace.Measure("Paste / wait for released keys"))
             {
                 if (restoreTarget) Native.SetForegroundWindow(target);
-                if (await Paste.IntoAsync(text, target, cancellation.Token, () => { trace.Pasted(); PublishState(); }, trace)) outcome = "Pasted";
-                else { outcome = "Saved to history"; Notify("Focus changed. Your transcript is ready in History."); }
+                if (await Paste.IntoAsync(text, target, cancellation.Token, () => { trace.Pasted(); PublishState(); }, trace, TargetContext.AcceptsTextAsync)) outcome = "Pasted";
+                else outcome = "Saved to history"; // Electron copies this transcript to the clipboard and shows the Copy action.
             }
         }
         catch (OperationCanceledException) { text = ""; outcome = cancellation.IsCancellationRequested ? "Cancelled" : "Timed out"; if (outcome == "Timed out") Notify("Transcription timed out. See the timing details in History."); }
-        catch (Exception ex) { Notify(ex.Message); }
+        catch (Exception ex)
+        {
+            if (audio is not null) KeepFailedAudio(id, audio, transcriptionModel, dictionaryTerms);
+            Notify(ex.Message + (audio is not null ? " Your recording was kept in History – you can play it back or retry transcription." : ""));
+        }
         finally
         {
             trace.Complete(outcome); cancellation.Dispose(); operation = null; metrics = null; session = null; insertionContext = null; processingPhase = null; gesture.Reset();
@@ -229,6 +246,45 @@ internal sealed class EngineApp : ApplicationContext
                 _ = UpdateCompletedMetricsAsync(id, trace);
             }
         }
+    }
+    private void KeepFailedAudio(string id, byte[] audio, string model, string[] dictionary)
+    {
+        lock (failedAudio)
+        {
+            failedAudio[id] = (audio, model, dictionary);
+            failedOrder.Remove(id); failedOrder.AddLast(id);
+            while (failedOrder.Count > 5 && failedOrder.First is { } oldest)
+            {
+                failedOrder.RemoveFirst();
+                failedAudio.Remove(oldest.Value);
+            }
+        }
+    }
+    private async Task<object> RetranscribeAsync(string id)
+    {
+        (byte[] Audio, string TranscriptionModel, string[] Dictionary) saved;
+        lock (failedAudio)
+        {
+            if (!failedAudio.TryGetValue(id, out saved))
+                throw new InvalidOperationException("No saved recording is available for retry. Play back the audio or dictate again.");
+        }
+        if (string.IsNullOrWhiteSpace(apiKey)) throw new InvalidOperationException("Add an OpenRouter API key in Settings first.");
+        var retryMetrics = new SessionMetrics();
+        (byte[] Bytes, string Format) encoded;
+        using (retryMetrics.Measure("Compress audio"))
+        {
+            try { encoded = AudioEncoding.Compress(saved.Audio); }
+            catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or InvalidOperationException)
+            {
+                using (retryMetrics.Measure("MP3 unavailable; using WAV")) encoded = (saved.Audio, "wav");
+            }
+        }
+        var text = await new Transcriber(http).TranscribeAsync(encoded.Bytes, apiKey, CancellationToken.None,
+            retryMetrics, "", encoded.Format, saved.Dictionary, saved.TranscriptionModel).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(text)) throw new InvalidOperationException("The retry returned no speech. Try again.");
+        retryMetrics.Complete("Retried");
+        lock (failedAudio) { failedAudio.Remove(id); failedOrder.Remove(id); }
+        return new { id, text, rawText = text, metrics = retryMetrics.Snapshot() };
     }
     private async Task UpdateCompletedMetricsAsync(string id, SessionMetrics trace)
     {

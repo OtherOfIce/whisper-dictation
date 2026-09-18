@@ -16,6 +16,11 @@ class HistoryStore {
           id TEXT PRIMARY KEY, text BLOB NOT NULL, rawText BLOB, metrics BLOB NOT NULL,
           audio BLOB, audioFormat TEXT, createdAt TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS OpenRouterCosts (
+          date TEXT NOT NULL, category TEXT NOT NULL, model TEXT NOT NULL,
+          provider TEXT NOT NULL, endpoint TEXT NOT NULL, amount REAL NOT NULL, requests INTEGER NOT NULL,
+          PRIMARY KEY (date, category, model, provider, endpoint)
+        );
         CREATE TABLE IF NOT EXISTS Metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       `));
       await this.importLegacyHistory();
@@ -63,6 +68,36 @@ class HistoryStore {
     // Builds that briefly encrypted audio stored safeStorage(base64(wav)). Keep those recordings readable.
     return { bytes: Buffer.from(this.decrypt(bytes), 'base64'), format: row.audioFormat };
   }
+  async readCostLedger() {
+    await this.initialize();
+    return this.withDatabase(database => {
+      const through = database.prepare("SELECT value FROM Metadata WHERE key = 'openRouterCostsThrough'").get()?.value;
+      const importedAt = database.prepare("SELECT value FROM Metadata WHERE key = 'openRouterCostsImportedAt'").get()?.value;
+      if (!through || !importedAt) return null;
+      const rows = database.prepare('SELECT date, category, model, provider, endpoint, amount, requests FROM OpenRouterCosts ORDER BY date, category, model, provider, endpoint').all()
+        .map(row => ({ ...row, requests: Number(row.requests) }));
+      return { rows, through, importedAt };
+    });
+  }
+  async replaceCostLedger(ledger) {
+    this.validateCostLedger(ledger);
+    await this.initialize();
+    this.withDatabase(database => {
+      const insert = database.prepare(`
+        INSERT INTO OpenRouterCosts (date, category, model, provider, endpoint, amount, requests)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      const metadata = database.prepare('INSERT OR REPLACE INTO Metadata (key, value) VALUES (?, ?)');
+      database.exec('BEGIN IMMEDIATE');
+      try {
+        database.exec('DELETE FROM OpenRouterCosts');
+        for (const row of ledger.rows) insert.run(row.date, row.category, row.model, row.provider, row.endpoint, row.amount, row.requests);
+        metadata.run('openRouterCostsThrough', ledger.through);
+        metadata.run('openRouterCostsImportedAt', ledger.importedAt);
+        database.exec('COMMIT');
+      } catch (error) { database.exec('ROLLBACK'); throw error; }
+    });
+  }
   replace(history, audioById = new Map()) {
     this.withDatabase(database => {
       const upsert = database.prepare(`
@@ -91,6 +126,13 @@ class HistoryStore {
   validate(history) {
     if (!Array.isArray(history) || history.some(entry => typeof entry.id !== 'string' || typeof entry.text !== 'string'
       || !entry.metrics || !Number.isFinite(Date.parse(entry.metrics.started)))) throw new Error('Invalid history');
+  }
+  validateCostLedger(ledger) {
+    if (!ledger || !Array.isArray(ledger.rows) || !Number.isFinite(Date.parse(ledger.through)) || !Number.isFinite(Date.parse(ledger.importedAt))
+      || ledger.rows.some(row => typeof row.date !== 'string' || !['voice', 'cleanup'].includes(row.category)
+        || typeof row.model !== 'string' || typeof row.provider !== 'string' || typeof row.endpoint !== 'string'
+        || !Number.isFinite(row.amount) || row.amount < 0 || !Number.isSafeInteger(row.requests) || row.requests < 0))
+      throw new Error('Invalid OpenRouter cost activity');
   }
   encrypt(value) { return this.crypto.encryptString(value); }
   decrypt(value) { return this.crypto.decryptString(Buffer.from(value)); }
