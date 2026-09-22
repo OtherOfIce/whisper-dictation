@@ -11,8 +11,10 @@ public static class TranscriptionModels
     public const string Gpt = "gpt-transcribe";
     public const string MaiVerbatim = "mai-transcribe-2-verbatim";
     public const string MaiClean = "mai-transcribe-2-clean";
-    public static bool IsValid(string value) => value is Gpt or MaiVerbatim or MaiClean;
+    public const string GrokStreaming = "grok-voice-transcribe-2-streaming";
+    public static bool IsValid(string value) => value is Gpt or MaiVerbatim or MaiClean or GrokStreaming;
     public static bool IsMai(string value) => value is MaiVerbatim or MaiClean;
+    public static bool IsStreaming(string value) => value == GrokStreaming;
 }
 
 public sealed class Transcriber(HttpClient client)
@@ -82,7 +84,8 @@ public sealed class Transcriber(HttpClient client)
         SessionMetrics? metrics = null, string prefix = "", string format = "wav", IReadOnlyList<string>? dictionaryTerms = null,
         string transcriptionModel = TranscriptionModels.MaiClean)
     {
-        if (!TranscriptionModels.IsValid(transcriptionModel)) throw new InvalidOperationException("Invalid transcription model.");
+        if (!TranscriptionModels.IsValid(transcriptionModel) || TranscriptionModels.IsStreaming(transcriptionModel))
+            throw new InvalidOperationException("Invalid file transcription model.");
         var userCancellation = cancellation;
         byte[] payloadBytes;
         using (metrics?.Measure(prefix + "Prepare request"))
@@ -256,11 +259,14 @@ public sealed class Transcriber(HttpClient client)
         using var json = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellation).ConfigureAwait(false), cancellationToken: cancellation).ConfigureAwait(false);
         if (!json.RootElement.TryGetProperty("text", out var text) || text.ValueKind != JsonValueKind.String)
             throw new InvalidDataException("OpenRouter returned no transcript. Try again.");
+        var transcript = text.GetString()!.Trim();
+        if (transcript.Length == 0)
+            throw new RetryableTranscriptionException("The selected model returned no transcript.", null, null);
         var root = json.RootElement;
         var usage = root.TryGetProperty("usage", out var usageValue) ? usageValue : default;
         metrics?.Cost("voice", TranscriptionModels.IsMai(transcriptionModel) ? MaiModel : Model,
             usage.ValueKind == JsonValueKind.Object && usage.TryGetProperty("cost", out var cost) && cost.TryGetDecimal(out var amount) ? amount : null);
-        return (text.GetString()!.Trim(), watch.Elapsed.TotalMilliseconds);
+        return (transcript, watch.Elapsed.TotalMilliseconds);
     }
 
     private static async Task<string?> ReadErrorDetailAsync(HttpResponseMessage response, CancellationToken cancellation)

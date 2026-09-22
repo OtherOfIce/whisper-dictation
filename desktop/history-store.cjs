@@ -14,7 +14,7 @@ class HistoryStore {
       this.withDatabase(database => database.exec(`
         CREATE TABLE IF NOT EXISTS History (
           id TEXT PRIMARY KEY, text BLOB NOT NULL, rawText BLOB, metrics BLOB NOT NULL,
-          audio BLOB, audioFormat TEXT, createdAt TEXT NOT NULL
+          audio BLOB, audioFormat TEXT, alternatives BLOB, createdAt TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS OpenRouterCosts (
           date TEXT NOT NULL, category TEXT NOT NULL, model TEXT NOT NULL,
@@ -23,6 +23,10 @@ class HistoryStore {
         );
         CREATE TABLE IF NOT EXISTS Metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       `));
+      this.withDatabase(database => {
+        const columns = new Set(database.prepare('PRAGMA table_info(History)').all().map(column => column.name));
+        if (!columns.has('alternatives')) database.exec('ALTER TABLE History ADD COLUMN alternatives BLOB');
+      });
       await this.importLegacyHistory();
     })();
     return this.initialized;
@@ -42,10 +46,11 @@ class HistoryStore {
   async read() {
     try {
       await this.initialize();
-      const rows = this.withDatabase(database => database.prepare('SELECT id, text, rawText, metrics, audio IS NOT NULL AS hasAudio FROM History ORDER BY createdAt DESC, rowid DESC').all());
+      const rows = this.withDatabase(database => database.prepare('SELECT id, text, rawText, metrics, alternatives, audio IS NOT NULL AS hasAudio FROM History ORDER BY createdAt DESC, rowid DESC').all());
       const history = rows.map(row => ({
         id: row.id, text: this.decrypt(row.text),
         ...(row.rawText == null ? {} : { rawText: this.decrypt(row.rawText) }),
+        ...(row.alternatives == null ? {} : { alternatives: JSON.parse(this.decrypt(row.alternatives)) }),
         metrics: JSON.parse(this.decrypt(row.metrics)), hasAudio: row.hasAudio === 1
       }));
       this.validate(history); return history;
@@ -101,11 +106,12 @@ class HistoryStore {
   replace(history, audioById = new Map()) {
     this.withDatabase(database => {
       const upsert = database.prepare(`
-        INSERT INTO History (id, text, rawText, metrics, audio, audioFormat, createdAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO History (id, text, rawText, metrics, audio, audioFormat, alternatives, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET text = excluded.text, rawText = excluded.rawText,
           metrics = excluded.metrics, audio = COALESCE(excluded.audio, History.audio),
-          audioFormat = COALESCE(excluded.audioFormat, History.audioFormat), createdAt = excluded.createdAt
+          audioFormat = COALESCE(excluded.audioFormat, History.audioFormat), alternatives = excluded.alternatives,
+          createdAt = excluded.createdAt
       `);
       const remove = database.prepare('DELETE FROM History WHERE id = ?');
       const existing = new Set(database.prepare('SELECT id FROM History').all().map(row => row.id));
@@ -115,7 +121,8 @@ class HistoryStore {
           const recording = audioById.get(entry.id);
           upsert.run(entry.id, this.encrypt(entry.text), typeof entry.rawText === 'string' ? this.encrypt(entry.rawText) : null,
             this.encrypt(JSON.stringify(entry.metrics)), recording?.bytes ?? null,
-            recording?.format ?? null, entry.metrics.started);
+            recording?.format ?? null, Array.isArray(entry.alternatives) && entry.alternatives.length ? this.encrypt(JSON.stringify(entry.alternatives)) : null,
+            entry.metrics.started);
           existing.delete(entry.id);
         }
         for (const id of existing) remove.run(id);
@@ -125,7 +132,9 @@ class HistoryStore {
   }
   validate(history) {
     if (!Array.isArray(history) || history.some(entry => typeof entry.id !== 'string' || typeof entry.text !== 'string'
-      || !entry.metrics || !Number.isFinite(Date.parse(entry.metrics.started)))) throw new Error('Invalid history');
+      || !entry.metrics || !Number.isFinite(Date.parse(entry.metrics.started)) || (entry.alternatives != null && (!Array.isArray(entry.alternatives)
+        || entry.alternatives.some(alternate => typeof alternate.id !== 'string' || typeof alternate.text !== 'string'
+          || !alternate.metrics || !Number.isFinite(Date.parse(alternate.metrics.started))))))) throw new Error('Invalid history');
   }
   validateCostLedger(ledger) {
     if (!ledger || !Array.isArray(ledger.rows) || !Number.isFinite(Date.parse(ledger.through)) || !Number.isFinite(Date.parse(ledger.importedAt))

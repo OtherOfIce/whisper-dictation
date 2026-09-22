@@ -23,6 +23,8 @@ internal static class Program
             }
             Gestures();
             Api().GetAwaiter().GetResult();
+            Fallback().GetAwaiter().GetResult();
+            XaiContract().GetAwaiter().GetResult();
             CleanupChecks.RunAsync(Check).GetAwaiter().GetResult();
             VocabularyChecks.RunAsync(Check).GetAwaiter().GetResult();
             PauseSplitting();
@@ -67,6 +69,83 @@ internal static class Program
         Check(activity.Rows is [{ Category: "voice", Model: Transcriber.MaiModel, Amount: 0.012m, Requests: 4 }, { Category: "cleanup", Model: CleanupService.Model, Amount: 0.003m, Requests: 2 }], "Activity imports the dictation key's voice and Luna costs");
         Check(activity.Rows[0].Provider == "Azure" && activity.Rows[0].Endpoint == "ep-1", "Activity keeps the provider endpoint breakdown");
         Check(activity.Through == DateTime.UtcNow.Date.AddDays(-1), "Activity stops at the last completed UTC day");
+    }
+    private static async Task Fallback()
+    {
+        var attempted = new List<string>();
+        var fallback = new ModelTranscription(
+            (model, _, _, _, _) =>
+            {
+                attempted.Add(model);
+                if (model == TranscriptionModels.MaiClean)
+                    throw new HttpRequestException("Provider unavailable", null, HttpStatusCode.ServiceUnavailable);
+                return Task.FromResult("Recovered by GPT");
+            },
+            model => model != TranscriptionModels.GrokStreaming);
+        var fallbackMetrics = new SessionMetrics();
+        var result = await fallback.TranscribeWithFallbackAsync([1, 2, 3], "wav", TranscriptionModels.MaiClean, [], fallbackMetrics, default);
+        Check(result.Text == "Recovered by GPT" && result.UsedModel == TranscriptionModels.Gpt, "A transient primary-model failure falls back to a different model");
+        Check(attempted.SequenceEqual([TranscriptionModels.MaiClean, TranscriptionModels.Gpt]), "Fallback follows the requested model's configured order");
+        var fallbackSnapshot = fallbackMetrics.Snapshot();
+        Check(fallbackSnapshot.RequestedTranscriptionModel == TranscriptionModels.MaiClean
+            && fallbackSnapshot.TranscriptionModel == TranscriptionModels.Gpt
+            && fallbackSnapshot.Fallbacks is [{ Model: TranscriptionModels.MaiClean }], "Fallback metrics report the requested model, successful model, and failed attempt");
+
+        attempted.Clear();
+        var emptyPrimary = new ModelTranscription(
+            (model, _, _, _, _) => { attempted.Add(model); return Task.FromResult(model == TranscriptionModels.MaiClean ? "" : "Recovered empty result"); },
+            model => model != TranscriptionModels.GrokStreaming);
+        Check((await emptyPrimary.TranscribeWithFallbackAsync([1], "wav", TranscriptionModels.MaiClean, [], new SessionMetrics(), default)).Text == "Recovered empty result",
+            "An empty provider result falls back instead of being treated as no speech");
+
+        attempted.Clear();
+        var rejectedRequest = new ModelTranscription(
+            (model, _, _, _, _) =>
+            {
+                attempted.Add(model);
+                if (model == TranscriptionModels.MaiClean)
+                    throw new HttpRequestException("Provider returned 400", null, HttpStatusCode.BadRequest);
+                return Task.FromResult("Recovered rejected request");
+            }, model => model != TranscriptionModels.GrokStreaming);
+        var rejectedMetrics = new SessionMetrics();
+        var rejectedResult = await rejectedRequest.TranscribeWithFallbackAsync([1], "wav", TranscriptionModels.MaiClean, [], rejectedMetrics, default);
+        Check(rejectedResult.Text == "Recovered rejected request"
+            && rejectedResult.FailedAttempts is [{ Model: TranscriptionModels.MaiClean, Error: "Provider returned 400" }]
+            && rejectedMetrics.Snapshot().Fallbacks is [{ Model: TranscriptionModels.MaiClean, Error: "Provider returned 400" }]
+            && attempted.SequenceEqual([TranscriptionModels.MaiClean, TranscriptionModels.Gpt]),
+            "A provider 400 is reported and falls back to another model");
+
+        attempted.Clear();
+        var authFailure = new ModelTranscription(
+            (model, _, _, _, _) =>
+            {
+                attempted.Add(model);
+                if (model != TranscriptionModels.GrokStreaming)
+                    throw new HttpRequestException("Rejected key", null, HttpStatusCode.Unauthorized);
+                return Task.FromResult("Recovered with separate provider credentials");
+            }, _ => true);
+        var authResult = await authFailure.TranscribeWithFallbackAsync([1], "wav", TranscriptionModels.MaiClean, [], new SessionMetrics(), default);
+        Check(authResult.Text == "Recovered with separate provider credentials"
+            && attempted.SequenceEqual([TranscriptionModels.MaiClean, TranscriptionModels.Gpt, TranscriptionModels.GrokStreaming]),
+            "Authentication failures fall through to models with separate provider credentials");
+
+        attempted.Clear();
+        var noGrokKey = new ModelTranscription(
+            (model, _, _, _, _) => { attempted.Add(model); throw new InvalidDataException("Malformed provider response"); },
+            model => model != TranscriptionModels.GrokStreaming);
+        try { await noGrokKey.TranscribeWithFallbackAsync([1], "wav", TranscriptionModels.Gpt, [], new SessionMetrics(), default); throw new Exception("Expected exhausted fallback"); }
+        catch (AggregateException) { Check(attempted.SequenceEqual([TranscriptionModels.Gpt, TranscriptionModels.MaiClean]), "Unavailable providers are skipped in the fallback chain"); }
+
+        Check(ModelTranscription.FallbackOrder(TranscriptionModels.GrokStreaming).SequenceEqual([
+            TranscriptionModels.GrokStreaming, TranscriptionModels.MaiClean, TranscriptionModels.Gpt
+        ]), "Grok falls back through MAI Clean and GPT");
+
+        attempted.Clear();
+        var exact = new ModelTranscription(
+            (model, _, _, _, _) => { attempted.Add(model); return Task.FromResult("Comparison"); },
+            _ => true);
+        var comparison = await exact.TranscribeExactAsync([1], "wav", TranscriptionModels.MaiVerbatim, [], new SessionMetrics(), default);
+        Check(comparison.Text == "Comparison" && attempted.SequenceEqual([TranscriptionModels.MaiVerbatim]), "Alternate transcription runs only the selected comparison model");
     }
     private static void PauseSplitting()
     {
@@ -236,6 +315,14 @@ internal static class Program
         }));
         Check(await new Transcriber(flaky) { RetryBackoff = _ => TimeSpan.Zero }.TranscribeAsync([1], "test-only", default) == "Recovered", "Transient rate limits are retried without losing the recording");
         Check(flakyCalls == 3, "Two throttled tries precede the successful transcription");
+        var emptyCalls = 0;
+        using var empty = new HttpClient(new Handler((_, _) =>
+        {
+            Interlocked.Increment(ref emptyCalls);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"text\":\"\"}") });
+        }));
+        try { await new Transcriber(empty) { RetryBackoff = _ => TimeSpan.Zero, HedgeDelay = _ => TimeSpan.Zero }.TranscribeAsync([0], "test-only", default); throw new Exception("Expected empty transcript failure"); }
+        catch (HttpRequestException) { Check(emptyCalls == 3, "An empty transcript is retried before cross-model fallback"); }
         var immediateCalls = 0;
         using var rejected = new HttpClient(new Handler((_, _) =>
         {
@@ -290,6 +377,53 @@ internal static class Program
         Check(await new Transcriber(fast) { HedgeDelay = _ => TimeSpan.FromMilliseconds(50) }.TranscribeAsync([1], "test-only", default, apiMetrics) == "Prompt", "Fast attempt returns without hedging");
         Check(fastCalls == 1, "No second request when first is prompt");
         Check(apiMetrics.Snapshot().Hedges.Length == 0, "Prompt requests record no hedge");
+    }
+    private static async Task XaiContract()
+    {
+        Check(TranscriptionModels.IsValid(TranscriptionModels.GrokStreaming)
+            && TranscriptionModels.IsStreaming(TranscriptionModels.GrokStreaming), "Grok streaming is a selectable streaming model");
+        var uri = XaiTranscription.StreamingUri(["Hashirama", "Sea of Storms"]);
+        Check(uri.Scheme == "wss" && uri.Host == "api.x.ai" && uri.AbsolutePath == "/v1/stt", "Grok streaming uses the direct xAI WebSocket");
+        Check(uri.Query.Contains("model=grok-voice-transcribe-2.0") && uri.Query.Contains("sample_rate=16000")
+            && uri.Query.Contains("encoding=pcm") && uri.Query.Contains("keyterm=Hashirama")
+            && uri.Query.Contains("keyterm=Sea%20of%20Storms"), "Streaming configuration includes PCM format and every dictionary keyterm");
+        var source = new[] { Enumerable.Repeat((byte)1, 1280).ToArray(), Enumerable.Repeat((byte)2, 1280).ToArray(), Enumerable.Repeat((byte)3, 1280).ToArray() };
+        var frames = XaiTranscription.Frames(source).ToArray();
+        Check(frames.Length == 2 && frames[0].Length == 3200 && frames[1].Length == 640, "Forty-millisecond capture buffers are repacked into 100ms streaming frames without dropping the tail");
+        Check(frames.SelectMany(frame => frame).SequenceEqual(source.SelectMany(chunk => chunk)), "Streaming frame conversion preserves every PCM byte in order");
+        try { XaiTranscription.ValidateKeyterms(Enumerable.Repeat("term", 101).ToArray()); throw new Exception("Expected keyterm limit"); }
+        catch (InvalidOperationException) { Check(true, "Grok dictionary rejects more than 100 keyterms instead of silently dropping biasing"); }
+        try { XaiTranscription.ValidateKeyterms([new string('x', 51)]); throw new Exception("Expected keyterm length limit"); }
+        catch (InvalidOperationException) { Check(true, "Grok dictionary rejects overlong keyterms instead of silently changing biasing"); }
+
+        using var http = new HttpClient(new Handler(async (request, token) =>
+        {
+            Check(request.RequestUri!.ToString() == "https://api.x.ai/v1/stt", "Grok retry uses the direct xAI batch endpoint");
+            Check(request.Headers.Authorization?.Parameter == "xai-test-only", "Grok retry uses the xAI bearer key");
+            var body = await request.Content!.ReadAsStringAsync(token);
+            Check(body.Contains("Hashirama") && body.Contains("audio.wav"), "Grok batch retry carries dictionary keyterms and audio");
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"text\":\"Hashirama\",\"duration\":1.0}") };
+        }));
+        var metrics = new SessionMetrics();
+        Check(await new XaiBatchTranscriber(http).TranscribeAsync([1, 2, 3], "wav", "xai-test-only", ["Hashirama"], metrics, default) == "Hashirama", "Grok batch retry returns the transcript");
+        Check(metrics.Snapshot().Costs is [{ Category: "voice", Model: XaiTranscription.Model, Amount: > 0 }], "Grok batch retry records its estimated xAI cost");
+        using var chunkFinal = JsonDocument.Parse("{\"type\":\"transcript.partial\",\"text\":\"Hashirama \",\"is_final\":true,\"speech_final\":false}");
+        using var interim = JsonDocument.Parse("{\"type\":\"transcript.partial\",\"text\":\"Hashira\",\"is_final\":false,\"speech_final\":false}");
+        using var emptyPartial = JsonDocument.Parse("{\"type\":\"transcript.partial\",\"is_final\":true,\"speech_final\":true}");
+        using var tail = JsonDocument.Parse("{\"type\":\"transcript.done\",\"text\":\" and Raikage\",\"duration\":7.9}");
+        using var textlessDone = JsonDocument.Parse("{\"type\":\"transcript.done\",\"duration\":7.9}");
+        Check(XaiStreamingSession.PartialFinalText(chunkFinal) == "Hashirama", "Locked streaming chunks are kept even with interim results off");
+        Check(XaiStreamingSession.PartialFinalText(interim) is null, "Mutable interim text is not kept as transcript");
+        Check(XaiStreamingSession.PartialFinalText(emptyPartial) is null, "Textless partial events contribute nothing");
+        Check(XaiStreamingSession.DoneText(tail) == "and Raikage", "The flushed tail is kept alongside streamed chunks");
+        Check(XaiStreamingSession.DoneText(textlessDone) is null, "A textless transcript.done falls back to streamed chunks instead of failing");
+        var stamped = new SessionMetrics { TranscriptionModel = TranscriptionModels.GrokStreaming, CleanupMode = CleanupService.LunaFast };
+        stamped.Complete("Pasted");
+        var snap = stamped.Snapshot();
+        Check(snap.TranscriptionModel == TranscriptionModels.GrokStreaming && snap.CleanupMode == CleanupService.LunaFast, "History metrics stamp the voice model and cleaner used");
+        using var snapJson = JsonDocument.Parse(JsonSerializer.Serialize(snap, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        Check(snapJson.RootElement.GetProperty("transcriptionModel").GetString() == TranscriptionModels.GrokStreaming
+            && snapJson.RootElement.GetProperty("cleanupMode").GetString() == CleanupService.LunaFast, "Stamped model and cleaner survive metrics JSON for history storage");
     }
     private static void Desktop()
     {

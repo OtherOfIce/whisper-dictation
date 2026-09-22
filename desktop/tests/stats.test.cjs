@@ -49,6 +49,15 @@ test('groups provider-reported costs by purpose and selected model', () => {
   });
 });
 
+test('includes alternate transcription costs without counting alternate words', () => {
+  const history = [{
+    text: 'primary words', metrics: { started: '2026-09-15T10:00:00Z', costs: [{ category: 'voice', model: 'primary', amount: 0.001 }] },
+    alternatives: [{ id: 'alt', text: 'these alternate words are not additional dictation', metrics: { started: '2026-09-15T10:01:00Z', costs: [{ category: 'voice', model: 'alternate', amount: 0.002 }] } }]
+  }];
+  assert.equal(getWordStats(history, new Date('2026-09-15T12:00:00Z')).total, 2);
+  assert.equal(getCostStats(history).voice, 0.003);
+});
+
 test('combines OpenRouter activity with locally recorded costs from the current UTC day', () => {
   const history = [
     { metrics: { started: '2026-09-15T10:00:00Z', costs: [{ category: 'voice', model: 'microsoft/mai-transcribe-2', amount: 0.002 }] } },
@@ -63,6 +72,25 @@ test('combines OpenRouter activity with locally recorded costs from the current 
     models: [
       { category: 'cleanup', model: 'openai/gpt-5.6-luna', amount: 0.003 },
       { category: 'voice', model: 'microsoft/mai-transcribe-2', amount: 0.012 }
+    ],
+    source: 'activity', through: '2026-09-14T00:00:00Z', importedAt: '2026-09-15T11:00:00Z'
+  });
+});
+
+test('keeps older direct xAI estimates when OpenRouter activity is imported', () => {
+  const history = [
+    { metrics: { started: '2026-09-15T10:00:00Z', costs: [{ category: 'voice', model: 'grok-voice-transcribe-2.0', amount: 0.004 }] } },
+    { metrics: { started: '2026-09-14T10:00:00Z', costs: [{ category: 'voice', model: 'grok-voice-transcribe-2.0', amount: 0.002 }] } },
+    { metrics: { started: '2026-09-14T10:00:00Z', costs: [{ category: 'voice', model: 'microsoft/mai-transcribe-2', amount: 9 }] } }
+  ];
+  const ledger = { through: '2026-09-14T00:00:00Z', importedAt: '2026-09-15T11:00:00Z', rows: [
+    { category: 'voice', model: 'microsoft/mai-transcribe-2', amount: 0.01 }
+  ] };
+  assert.deepEqual(getDisplayedCostStats(history, ledger, new Date('2026-09-15T12:00:00Z')), {
+    voice: 0.016, cleanup: 0, voiceCount: 2, cleanupCount: 0,
+    models: [
+      { category: 'voice', model: 'microsoft/mai-transcribe-2', amount: 0.01 },
+      { category: 'voice', model: 'grok-voice-transcribe-2.0', amount: 0.006 }
     ],
     source: 'activity', through: '2026-09-14T00:00:00Z', importedAt: '2026-09-15T11:00:00Z'
   });

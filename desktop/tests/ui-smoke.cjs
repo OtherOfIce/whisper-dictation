@@ -8,8 +8,10 @@ exports.run = async ({ main, overlay, app, engineEvent, testOverlayActions }) =>
   const evaluate = code => main.webContents.executeJavaScript(code);
   const directory = path.join(__dirname, '..', 'artifacts'); await fs.mkdir(directory, { recursive: true });
   const { history } = require('./fixtures.cjs');
+  const originalRecordingStarted = history[0].metrics.started;
   const store = new HistoryStore(path.join(directory, 'test-history.sqlite'), safeStorage);
   const wav = Buffer.from('RIFF-test-WAVE-audio');
+  history[0].alternatives = [{ id: 'alternate-gpt', text: 'An alternate GPT transcript.', rawText: 'An alternate GPT transcript.', metrics: { ...history[0].metrics, started: new Date(Date.parse(originalRecordingStarted) + 60000).toISOString(), costs: [], transcriptionModel: 'gpt-transcribe', cleanupMode: 'off' } }];
   await store.write(history, new Map([[history[0].id, { bytes: wav, format: 'wav' }]]));
   assert.deepEqual(await new HistoryStore(store.file, safeStorage).read(), history.map((entry, index) => ({ ...entry, hasAudio: index === 0 })));
   assert.deepEqual(await new HistoryStore(store.file, safeStorage).readAudio(history[0].id), { bytes: wav, format: 'wav' });
@@ -29,11 +31,31 @@ exports.run = async ({ main, overlay, app, engineEvent, testOverlayActions }) =>
   assert.deepEqual(await new HistoryStore(migratedFile, safeStorage, legacyFile).read(), history.map(entry => ({ ...entry, hasAudio: false })));
   await new HistoryStore(migratedFile, safeStorage, legacyFile).write([]);
   assert.deepEqual(await new HistoryStore(migratedFile, safeStorage, legacyFile).read(), []);
+  engineEvent({ type: 'history', history });
   await wait(600);
   assert.equal(await evaluate('document.querySelectorAll(".transcript").length'), 4);
+  assert.equal(await evaluate('document.querySelectorAll(\'[aria-label="Show transcription details"]\').length'), 4);
+  assert((await evaluate('document.querySelector(".transcript-meta .meta-popover").textContent')).includes('MAI-Transcribe-2 · Clean'));
+  assert((await evaluate('document.querySelector(".transcript-meta .meta-popover").textContent')).includes('Luna'));
+  assert((await evaluate('document.querySelector(".transcript-meta .meta-popover").textContent')).includes('Response'));
+  assert((await evaluate('document.querySelector(".transcript-meta .meta-popover").textContent')).includes('Audio'));
   assert.equal(await evaluate('document.querySelectorAll(\'[aria-label="Play audio"]\').length'), 1);
   assert.equal(await evaluate('document.querySelectorAll(\'[aria-label="Download audio"]\').length'), 1);
   assert.equal(await evaluate('document.querySelectorAll(\'[aria-label="No saved audio"]\').length'), 6);
+  assert.equal(await evaluate('document.querySelectorAll(\'button[aria-label="Compare transcripts"]\').length'), 1);
+  await evaluate('document.querySelector(\'button[aria-label="Compare transcripts"]\').click()'); await wait(100);
+  assert.equal(await evaluate('document.getElementById("comparison-drawer").hidden'), false);
+  assert.equal(await evaluate('document.querySelectorAll(".transcript-version").length'), 2);
+  assert((await evaluate('document.getElementById("comparison-versions").textContent')).includes('An alternate GPT transcript.'));
+  assert.equal(await evaluate('document.querySelector(\'[data-alternate-id="alternate-gpt"] [data-action="make-primary"]\').textContent'), 'Make primary');
+  await evaluate('document.getElementById("alternate-model").value="mai-transcribe-2-verbatim"; document.getElementById("create-alternate").click()'); await wait(150);
+  assert.equal(await evaluate('document.querySelectorAll(".transcript-version").length'), 3);
+  assert((await evaluate('document.getElementById("comparison-versions").textContent')).includes('Alternate from mai-transcribe-2-verbatim.'));
+  await fs.writeFile(path.join(directory, 'comparison.png'), (await main.webContents.capturePage()).toPNG());
+  await evaluate('document.querySelector(\'[data-alternate-id="alternate-gpt"] [data-action="make-primary"]\').click()'); await wait(150);
+  assert.equal(await evaluate('document.querySelector(".transcript-version .transcript-text").textContent'), 'An alternate GPT transcript.');
+  assert.equal(await evaluate(`window.whisper.call('initial').then(x => x.history.find(entry => entry.id === 'demo-0').metrics.started)`), originalRecordingStarted);
+  await evaluate('document.getElementById("close-comparison").click()');
   assert.equal(await evaluate('getComputedStyle(document.querySelector(\'[aria-label="No saved audio"]\')).cursor'), 'default');
   assert.equal(await evaluate('document.getElementById("balance-amount").textContent'), '$18.42');
   assert.equal(await evaluate('document.getElementById("cost-voice").textContent'), '$0.0212');
@@ -85,13 +107,17 @@ exports.run = async ({ main, overlay, app, engineEvent, testOverlayActions }) =>
   assert.equal(await evaluate('document.getElementById("transcription-model").value'), 'mai-transcribe-2-clean');
   assert.equal(await evaluate('document.getElementById("cleanup-mode").value'), 'off');
   assert.equal(await evaluate('document.getElementById("dictionary-terms").value'), '');
+  await evaluate(`document.getElementById('xai-api-key').value='xai-test-only'; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))`);
+  await wait(100);
+  assert.equal(await evaluate('document.getElementById("xai-api-key").value'), '');
+  assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.hasXaiKey)"), true);
   await evaluate(`document.getElementById('management-key').value='test-management-key'; document.getElementById('import-costs').click()`);
   await wait(100);
   assert.equal(await evaluate('document.getElementById("management-key").value'), '');
   assert((await evaluate('document.getElementById("import-costs-status").textContent')).includes('Delete the temporary key'));
   assert(!(await fs.readFile(path.join(app.getPath('userData'), 'history.sqlite'))).includes(Buffer.from('test-management-key')));
-  assert.equal(await evaluate('document.getElementById("cost-voice").textContent'), '$0.0266');
-  assert.equal(await evaluate('document.getElementById("cost-cleanup").textContent'), '$0.0054');
+  assert.equal(await evaluate('document.getElementById("cost-voice").textContent'), '$0.0242');
+  assert.equal(await evaluate('document.getElementById("cost-cleanup").textContent'), '$0.0048');
   await evaluate(`document.getElementById("dictionary-terms").value="Acme Corp\\n  Maya's project  \\n\\nmeeting notes"; document.getElementById("settings-form").requestSubmit(document.querySelector("[type=submit]"))`);
   await wait(100);
   assert.deepEqual(await evaluate("window.whisper.call('initial').then(x => x.settings.dictionaryTerms)"), ['Acme Corp', "Maya's project", 'meeting notes']);
@@ -101,11 +127,12 @@ exports.run = async ({ main, overlay, app, engineEvent, testOverlayActions }) =>
   await evaluate('document.getElementById("dictionary-terms").value="Astra\\nExisting term"; document.getElementById("import-wispr").click()'); await wait(100);
   assert.deepEqual(await evaluate("window.whisper.call('initial').then(x => x.settings.dictionaryTerms)"), ['Astra', 'Existing term', 'Wispr Flow']);
   assert.equal(await evaluate('document.getElementById("import-wispr-status").textContent'), '1 new term imported. 3 snippets were skipped.');
-  for (const model of ['mai-transcribe-2-verbatim', 'mai-transcribe-2-clean', 'gpt-transcribe']) {
+  for (const model of ['mai-transcribe-2-verbatim', 'mai-transcribe-2-clean', 'gpt-transcribe', 'grok-voice-transcribe-2-streaming']) {
     await evaluate(`document.getElementById('transcription-model').value=${JSON.stringify(model)}; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))`);
     await wait(100);
     assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.transcriptionModel)"), model);
   }
+  assert.equal(await evaluate('document.getElementById("live-chunks").disabled'), true);
   for (const mode of ['luna', 'luna-fast', 'off']) {
     await evaluate(`document.getElementById('cleanup-mode').value=${JSON.stringify(mode)}; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))`);
     await wait(100);

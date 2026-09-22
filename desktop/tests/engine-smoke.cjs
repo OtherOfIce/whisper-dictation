@@ -10,8 +10,8 @@ createInterface({ input: child.stdout }).on('line', line => {
     const event = JSON.parse(line);
     if (event.type === 'ready') { ready = true; child.stdin.write('{"id":1,"method":"settings"}\n{"id":2,"method":"state"}\n'); }
     if (event.type === 'reply' && event.id === 1) {
-      assert.equal(typeof event.result.hasKey, 'boolean'); assert(!('apiKey' in event.result)); settings = true;
-      assert(['gpt-transcribe', 'mai-transcribe-2-verbatim', 'mai-transcribe-2-clean'].includes(event.result.transcriptionModel));
+    assert.equal(typeof event.result.hasKey, 'boolean'); assert.equal(typeof event.result.hasXaiKey, 'boolean'); assert(!('apiKey' in event.result)); assert(!('xaiApiKey' in event.result)); settings = true;
+      assert(['gpt-transcribe', 'mai-transcribe-2-verbatim', 'mai-transcribe-2-clean', 'grok-voice-transcribe-2-streaming'].includes(event.result.transcriptionModel));
       assert(['off', 'luna', 'luna-fast'].includes(event.result.cleanupMode));
       assert.equal(typeof event.result.lockMode, 'boolean');
       assert(Array.isArray(event.result.dictionaryTerms));

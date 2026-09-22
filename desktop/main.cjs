@@ -3,6 +3,7 @@ const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { projectTimings } = require('./model.cjs');
 const { HistoryStore } = require('./history-store.cjs');
@@ -72,6 +73,20 @@ else {
     if (historyError) { notify('Could not save history. Your current transcripts are still available in this window.'); return; }
     saveQueue = historyStore.write(history, audioById);
     saveQueue.catch(() => notify('Could not save history. Your current transcripts are still available in this window.'));
+  }
+  async function transcribeSavedRecording(entry, model, fallback = false) {
+    const recording = await historyStore.readAudio(entry.id);
+    if (!recording) throw new Error('The saved recording could not be found.');
+    const directory = await fs.mkdtemp(path.join(app.getPath('temp'), 'local-whisper-transcribe-'));
+    const extension = recording.format === 'mp3' ? 'mp3' : 'wav';
+    const audioPath = path.join(directory, `recording.${extension}`);
+    try {
+      await fs.writeFile(audioPath, recording.bytes);
+      return await send('transcribeFile', { path: audioPath, format: extension, model, fallback }, 180000);
+    } finally {
+      await fs.unlink(audioPath).catch(() => {});
+      await fs.rmdir(directory).catch(() => {});
+    }
   }
   function showMain(view = 'history') { main.show(); main.focus(); broadcast({ type: 'navigate', view }); }
   function engineEvent(event) {
@@ -200,11 +215,12 @@ else {
         broadcast({ type: 'settings', settings }); return settings;
       }
       case 'saveSettings': {
-        if (!params || typeof params.liveChunks !== 'boolean' || typeof params.lockMode !== 'boolean' || (params.apiKey != null && (typeof params.apiKey !== 'string' || params.apiKey.length > 1024))) throw new Error('Invalid settings.');
-        if (!['gpt-transcribe', 'mai-transcribe-2-verbatim', 'mai-transcribe-2-clean'].includes(params.transcriptionModel)) throw new Error('Invalid transcription model.');
+        if (!params || typeof params.liveChunks !== 'boolean' || typeof params.lockMode !== 'boolean' || (params.apiKey != null && (typeof params.apiKey !== 'string' || params.apiKey.length > 1024)) || (params.xaiApiKey != null && (typeof params.xaiApiKey !== 'string' || params.xaiApiKey.length > 1024))) throw new Error('Invalid settings.');
+        if (!['gpt-transcribe', 'mai-transcribe-2-verbatim', 'mai-transcribe-2-clean', 'grok-voice-transcribe-2-streaming'].includes(params.transcriptionModel)) throw new Error('Invalid transcription model.');
         if (!['off', 'luna', 'luna-fast'].includes(params.cleanupMode)) throw new Error('Invalid cleanup mode.');
         validateDictionaryTerms(params.dictionaryTerms);
-        settings = testMode ? { ...settings, liveChunks: params.liveChunks, lockMode: params.lockMode, transcriptionModel: params.transcriptionModel, cleanupMode: params.cleanupMode, dictionaryTerms: params.dictionaryTerms } : await send('saveSettings', params);
+        if (params.transcriptionModel === 'grok-voice-transcribe-2-streaming' && (params.dictionaryTerms.length > 100 || params.dictionaryTerms.some(term => term.length > 50))) throw new Error('Grok streaming accepts up to 100 dictionary terms of 50 characters each.');
+        settings = testMode ? { ...settings, hasXaiKey: settings.hasXaiKey || !!params.xaiApiKey, liveChunks: params.liveChunks, lockMode: params.lockMode, transcriptionModel: params.transcriptionModel, cleanupMode: params.cleanupMode, dictionaryTerms: params.dictionaryTerms } : await send('saveSettings', params);
         broadcast({ type: 'settings', settings }); refreshCredits(); return settings;
       }
       case 'importWisprDictionary': {
@@ -220,6 +236,12 @@ else {
       case 'copy': {
         const entry = history.find(x => x.id === params.id); if (!entry) throw new Error('Transcript no longer exists.');
         await clipboard.writeText(entry.text); return true;
+      }
+      case 'copyTranscriptVersion': {
+        const entry = history.find(x => x.id === params.id); if (!entry) throw new Error('Transcript no longer exists.');
+        const version = params.alternateId ? entry.alternatives?.find(x => x.id === params.alternateId) : entry;
+        if (!version?.text) throw new Error('Transcript version no longer exists.');
+        clipboard.writeText(version.text); return true;
       }
       case 'copyLast': return copyLatest();
       case 'audio': {
@@ -239,10 +261,43 @@ else {
         if (result.canceled) return false;
         await fs.writeFile(result.filePath, recording.bytes); return true;
       }
+      case 'transcribeAlternate': {
+        const entry = history.find(x => x.id === params.id); if (!entry) throw new Error('Transcript no longer exists.');
+        if (!entry.hasAudio) throw new Error('This transcript has no saved recording.');
+        const allowedModels = ['gpt-transcribe', 'mai-transcribe-2-verbatim', 'mai-transcribe-2-clean', 'grok-voice-transcribe-2-streaming'];
+        if (!allowedModels.includes(params.model)) throw new Error('Choose a valid transcription model.');
+        let updated;
+        if (testMode) {
+          updated = { text: `Alternate from ${params.model}.`, rawText: `Alternate from ${params.model}.`, metrics: { ...entry.metrics, started: new Date().toISOString(), costs: [], transcriptionModel: params.model, requestedTranscriptionModel: params.model, cleanupMode: 'off', outcome: 'Alternate transcript' } };
+        } else {
+          updated = await transcribeSavedRecording(entry, params.model);
+        }
+        const alternate = { id: randomUUID(), text: updated.text, rawText: updated.rawText, metrics: updated.metrics };
+        entry.alternatives = [...(entry.alternatives || []).filter(item => item.metrics?.transcriptionModel !== params.model), alternate];
+        await saveHistory();
+        broadcast({ type: 'history', history }); broadcast({ type: 'stats', stats: getWordStats(history), costs: currentCosts() });
+        return alternate;
+      }
+      case 'makeTranscriptPrimary': {
+        const entry = history.find(x => x.id === params.id); if (!entry) throw new Error('Transcript no longer exists.');
+        const alternatives = entry.alternatives || [];
+        const selected = alternatives.find(item => item.id === params.alternateId);
+        if (!selected) throw new Error('Alternate transcript no longer exists.');
+        const recordingStarted = entry.metrics.started;
+        const previous = { id: randomUUID(), text: entry.text, ...(typeof entry.rawText === 'string' ? { rawText: entry.rawText } : {}), metrics: entry.metrics };
+        entry.text = selected.text; entry.rawText = selected.rawText;
+        entry.metrics = { ...selected.metrics, transcribedAt: selected.metrics.transcribedAt || selected.metrics.started, started: recordingStarted };
+        entry.alternatives = [...alternatives.filter(item => item.id !== selected.id), previous];
+        await saveHistory(); updateTrayMenu();
+        broadcast({ type: 'history', history }); broadcast({ type: 'stats', stats: getWordStats(history), costs: currentCosts() });
+        return true;
+      }
       case 'delete': history = history.filter(x => x.id !== params.id); await saveHistory(); updateTrayMenu(); broadcast({ type: 'history', history }); broadcast({ type: 'stats', stats: getWordStats(history), costs: currentCosts() }); return true;
       case 'retranscribe': {
         const entry = history.find(x => x.id === params.id); if (!entry) throw new Error('Transcript no longer exists.');
-        const updated = testMode ? { id: entry.id, text: 'Retried transcript.', rawText: 'Retried transcript.', metrics: entry.metrics } : await send('retranscribe', { id: params.id }, 180000);
+        if (!entry.hasAudio) throw new Error('This transcript has no saved recording.');
+        const requestedModel = entry.metrics?.requestedTranscriptionModel || entry.metrics?.transcriptionModel || settings.transcriptionModel || 'mai-transcribe-2-clean';
+        const updated = testMode ? { id: entry.id, text: 'Retried transcript.', rawText: 'Retried transcript.', metrics: entry.metrics } : await transcribeSavedRecording(entry, requestedModel, true);
         entry.text = updated.text; entry.rawText = updated.rawText; entry.metrics = updated.metrics;
         updateTrayMenu(); await saveHistory();
         broadcast({ type: 'history', history }); broadcast({ type: 'stats', stats: getWordStats(history), costs: currentCosts() });

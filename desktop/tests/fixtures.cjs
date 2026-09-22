@@ -25,6 +25,10 @@ module.exports = {
   metrics,
   history: texts.map((text, i) => ({ id: `demo-${i}`, text, hasAudio: i === 0, metrics: {
     ...metrics,
+    transcriptionModel: [
+      'mai-transcribe-2-clean', 'gpt-transcribe', 'mai-transcribe-2-verbatim', 'grok-voice-transcribe-2-streaming'
+    ][i],
+    cleanupMode: [0, 2].includes(i) ? 'luna' : 'off',
     started: new Date(Date.now() - i * 3600000).toISOString(),
     costs: [
       { category: 'voice', model: [
@@ -33,7 +37,7 @@ module.exports = {
       ...([0, 2].includes(i) ? [{ category: 'cleanup', model: 'openai/gpt-5.6-luna', amount: i === 0 ? 0.0003 : 0.0005 }] : [])
     ]
   } })),
-  settings: { hasKey: true, liveChunks: false, lockMode: true, transcriptionModel: 'mai-transcribe-2-clean', cleanupMode: 'off', dictionaryTerms: [] },
+  settings: { hasKey: true, hasXaiKey: false, liveChunks: false, lockMode: true, transcriptionModel: 'mai-transcribe-2-clean', cleanupMode: 'off', dictionaryTerms: [] },
   balance: {
     kind: 'account', remaining: 18.42, usage: 1.5832, usageDaily: .0642, message: 'OpenRouter account balance', updated: new Date().toISOString()
   },

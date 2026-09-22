@@ -3,7 +3,7 @@
   "productName": "Local Whisper",
   "version": "0.3.0",
   "private": true,
-  "description": "Local Windows dictation with OpenRouter",
+  "description": "Low-latency Windows dictation",
   "main": "main.cjs",
   "scripts": {
     "start": "node launch.cjs",

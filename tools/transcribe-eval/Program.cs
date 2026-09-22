@@ -9,12 +9,21 @@ using LocalWhisper;
 using NAudio.Wave;
 
 var source = Argument(args, "--source") ?? @"C:\Users\Liam\Downloads\WhiperFlow";
-var output = Argument(args, "--output") ?? "artifacts/transcribe-eval-gpt-transcribe.json";
+var outputArgument = Argument(args, "--output");
+var output = outputArgument ?? "artifacts/transcribe-eval-gpt-transcribe.json";
+var rescore = Argument(args, "--rescore");
 var model = Argument(args, "--model") ?? Transcriber.Model;
+var service = (Argument(args, "--service") ?? "openrouter").ToLowerInvariant();
 var style = Argument(args, "--style");
 var provider = Argument(args, "--provider");
 var language = Argument(args, "--language");
 var locales = Argument(args, "--locales");
+var xaiFormat = bool.TryParse(Argument(args, "--xai-format"), out var configuredXaiFormat) && configuredXaiFormat;
+var fillerWords = bool.TryParse(Argument(args, "--filler-words"), out var configuredFillerWords) && configuredFillerWords;
+var dictionaryEnabled = !bool.TryParse(Argument(args, "--dictionary"), out var configuredDictionary) || configuredDictionary;
+var vadThreshold = double.TryParse(Argument(args, "--vad-threshold"), CultureInfo.InvariantCulture, out var configuredVadThreshold)
+    ? configuredVadThreshold
+    : (double?)null;
 var sampleId = Argument(args, "--sample");
 var parallelism = int.TryParse(Argument(args, "--parallelism"), out var configuredParallelism)
     ? configuredParallelism
@@ -28,8 +37,15 @@ var pricePerHour = decimal.TryParse(Argument(args, "--price-per-hour"), out var 
         "openai/whisper-large-v3-turbo" => 0.04m,
         "openai/whisper-large-v3" => 0.04m,
         MuseModel => 0.18m,
+        "grok-voice-transcribe-2.0" => 0.10m,
+        "grok-voice-transcribe-1.0" => 0.10m,
         _ => 0.27m
     };
+if (service is not ("openrouter" or "xai"))
+{
+    Console.Error.WriteLine("--service must be openrouter or xai.");
+    return 2;
+}
 if (style is not null && style is not ("verbatim" or "clean"))
 {
     Console.Error.WriteLine("--style must be verbatim or clean.");
@@ -38,6 +54,16 @@ if (style is not null && style is not ("verbatim" or "clean"))
 if (parallelism < 1)
 {
     Console.Error.WriteLine("--parallelism must be at least 1.");
+    return 2;
+}
+if (vadThreshold is < 0 or > 1)
+{
+    Console.Error.WriteLine("--vad-threshold must be between 0 and 1.");
+    return 2;
+}
+if (service == "xai" && xaiFormat && string.IsNullOrWhiteSpace(language))
+{
+    Console.Error.WriteLine("--xai-format true requires --language.");
     return 2;
 }
 if (!Directory.Exists(source))
@@ -77,18 +103,63 @@ if (pairs.Length == 0)
 
 var equivalences = EquivalencePolicy.Load(Path.Combine(source, "equivalence-policy.json"));
 
-var key = Settings.LoadKey();
+if (rescore is not null)
+{
+    if (!File.Exists(rescore))
+    {
+        Console.Error.WriteLine($"Report does not exist: {rescore}");
+        return 2;
+    }
+    var prior = JsonSerializer.Deserialize<Report>(await File.ReadAllBytesAsync(rescore))
+        ?? throw new InvalidDataException("Could not read the report.");
+    var rescored = prior.Results.Select(result =>
+    {
+        if (result.Error is not null) return result;
+        var distance = WordDistance(result.Reference, result.Transcript, equivalences);
+        return result with
+        {
+            ReferenceWords = distance.ReferenceWords,
+            Substitutions = distance.Substitutions,
+            Deletions = distance.Deletions,
+            Insertions = distance.Insertions,
+            WordErrorRate = distance.ErrorRate
+        };
+    }).ToArray();
+    var rescoredReport = prior with
+    {
+        RunAt = DateTimeOffset.Now,
+        EquivalencePolicy = equivalences.Description,
+        Aggregate = Summarize(rescored, prior.Aggregate.Samples),
+        Results = rescored
+    };
+    var rescoreOutput = Path.GetFullPath(outputArgument ?? Path.Combine(
+        Path.GetDirectoryName(rescore) ?? "",
+        Path.GetFileNameWithoutExtension(rescore) + "-rescored.json"));
+    Directory.CreateDirectory(Path.GetDirectoryName(rescoreOutput)!);
+    await File.WriteAllTextAsync(rescoreOutput, JsonSerializer.Serialize(rescoredReport, new JsonSerializerOptions { WriteIndented = true }));
+    Console.WriteLine($"Rescored report: {rescoreOutput}");
+    Console.WriteLine($"Summary: success={rescoredReport.Aggregate.Successful}/{rescoredReport.Aggregate.Samples} micro-WER={rescoredReport.Aggregate.MicroWordErrorRate:P2} macro-WER={rescoredReport.Aggregate.MacroWordErrorRate:P2}");
+    return 0;
+}
+
+var key = service == "xai"
+    ? Environment.GetEnvironmentVariable("XAI_API_KEY")
+        ?? Environment.GetEnvironmentVariable("XAI_API_KEY", EnvironmentVariableTarget.User)
+        ?? ""
+    : Settings.LoadKey();
 if (string.IsNullOrWhiteSpace(key))
 {
-    Console.Error.WriteLine("No saved OpenRouter key was found. Add one in Local Whisper Settings or set OPENROUTER_API_KEY.");
+    Console.Error.WriteLine(service == "xai"
+        ? "XAI_API_KEY is not set. Set it in this shell before running a direct xAI benchmark."
+        : "No saved OpenRouter key was found. Add one in Local Whisper Settings or set OPENROUTER_API_KEY.");
     return 2;
 }
 
 var results = new SampleResult[pairs.Length];
 
-Console.WriteLine($"Transcription eval: model={model} style={style ?? "default"} provider={provider ?? "auto"} language={language ?? "auto"} locales={locales ?? "auto"} pairs={pairs.Length} parallelism={parallelism}");
+Console.WriteLine($"Transcription eval: service={service} model={model} style={style ?? "default"} provider={provider ?? "auto"} language={language ?? "auto"} locales={locales ?? "auto"} pairs={pairs.Length} parallelism={parallelism}");
 Console.WriteLine($"References: {(reviewedReferenceMode ? "reviewed canonicals" : "provisional Wispr output")}; skipped-unreviewed={skippedUnreviewed}; equivalence-policy={equivalences.Description}");
-Console.WriteLine("Each file is sent once. The locally saved key is never printed or written to the report.");
+Console.WriteLine("Each file is sent once. The API key is never printed or written to the report.");
 
 await Parallel.ForEachAsync(Enumerable.Range(0, pairs.Length), new ParallelOptions { MaxDegreeOfParallelism = parallelism },
     async (index, _) => results[index] = await Evaluate(pairs[index]));
@@ -98,7 +169,7 @@ async Task<SampleResult> Evaluate(Sample pair)
     try
     {
         var reference = (await File.ReadAllTextAsync(pair.ReferencePath)).Trim();
-        var dictionaryTerms = ReadDictionary(pair.DictionaryPath);
+        var dictionaryTerms = dictionaryEnabled ? ReadDictionary(pair.DictionaryPath) : [];
         var wav = await File.ReadAllBytesAsync(pair.WavPath);
         double audioSeconds;
         using (var reader = new WaveFileReader(pair.WavPath)) audioSeconds = reader.TotalTime.TotalSeconds;
@@ -110,7 +181,8 @@ async Task<SampleResult> Evaluate(Sample pair)
         using var capture = new UsageCaptureHandler(new HttpClientHandler());
         using var http = new HttpClient(capture) { Timeout = Timeout.InfiniteTimeSpan };
         var requestWatch = Stopwatch.StartNew();
-        var transcript = await Transcribe(http, encoded.Bytes, encoded.Format, key, model, style, dictionaryTerms, provider, language, locales);
+        var transcript = await Transcribe(http, encoded.Bytes, encoded.Format, key, service, model, style, dictionaryTerms,
+            provider, language, locales, xaiFormat, fillerWords, vadThreshold);
         requestWatch.Stop();
 
         var distance = WordDistance(reference, transcript, equivalences);
@@ -134,27 +206,12 @@ async Task<SampleResult> Evaluate(Sample pair)
 }
 
 var successful = results.Where(result => result.Error is null).ToArray();
-var reportedCosts = successful.Where(result => result.ReportedCost.HasValue).Select(result => result.ReportedCost!.Value).ToArray();
-var aggregate = new Aggregate(
-    pairs.Length,
-    successful.Length,
-    successful.Sum(result => result.AudioSeconds),
-    Median(successful.Select(result => result.EncodeMs)),
-    Median(successful.Select(result => result.RequestMs)),
-    Percentile(successful.Select(result => result.RequestMs), 0.90),
-    Percentile(successful.Select(result => result.RequestMs), 0.95),
-    successful.Length == 0 ? 0 : successful.Average(result => result.RequestMs),
-    successful.Sum(result => result.Substitutions + result.Deletions + result.Insertions),
-    successful.Sum(result => result.ReferenceWords),
-    MicroWer(successful),
-    successful.Length == 0 ? 0 : successful.Average(result => result.WordErrorRate),
-    reportedCosts.Length == 0 ? null : reportedCosts.Sum(),
-    reportedCosts.Length,
-    successful.Sum(result => result.EstimatedCost));
+var aggregate = Summarize(results, pairs.Length);
 
 Console.WriteLine($"Summary: success={aggregate.Successful}/{aggregate.Samples} audio={aggregate.AudioSeconds:F1}s median-request={aggregate.MedianRequestMs:F0}ms p90-request={aggregate.P90RequestMs:F0}ms p95-request={aggregate.P95RequestMs:F0}ms mean-request={aggregate.MeanRequestMs:F0}ms micro-WER={aggregate.MicroWordErrorRate:P1} macro-WER={aggregate.MacroWordErrorRate:P1} reported-cost={Money(aggregate.ReportedCost)} duration-estimate={Money(aggregate.EstimatedCost)}");
 
-var report = new Report(DateTimeOffset.Now, source, model, style,
+var report = new Report(DateTimeOffset.Now, source, service, model, style, language, xaiFormat, fillerWords, vadThreshold,
+    dictionaryEnabled,
     reviewedReferenceMode
         ? "References are Liam's audio-reviewed canonicals. Accepted equivalences are applied before WER."
         : "Wispr Flow references may contain automatic editing and are not verbatim ground truth.",
@@ -198,6 +255,28 @@ static double MicroWer(IEnumerable<SampleResult> results)
     return words == 0 ? 0 : (double)values.Sum(value => value.Substitutions + value.Deletions + value.Insertions) / words;
 }
 
+static Aggregate Summarize(IEnumerable<SampleResult> source, int samples)
+{
+    var successful = source.Where(result => result.Error is null).ToArray();
+    var reportedCosts = successful.Where(result => result.ReportedCost.HasValue).Select(result => result.ReportedCost!.Value).ToArray();
+    return new Aggregate(
+        samples,
+        successful.Length,
+        successful.Sum(result => result.AudioSeconds),
+        Median(successful.Select(result => result.EncodeMs)),
+        Median(successful.Select(result => result.RequestMs)),
+        Percentile(successful.Select(result => result.RequestMs), 0.90),
+        Percentile(successful.Select(result => result.RequestMs), 0.95),
+        successful.Length == 0 ? 0 : successful.Average(result => result.RequestMs),
+        successful.Sum(result => result.Substitutions + result.Deletions + result.Insertions),
+        successful.Sum(result => result.ReferenceWords),
+        MicroWer(successful),
+        successful.Length == 0 ? 0 : successful.Average(result => result.WordErrorRate),
+        reportedCosts.Length == 0 ? null : reportedCosts.Sum(),
+        reportedCosts.Length,
+        successful.Sum(result => result.EstimatedCost));
+}
+
 static double Median(IEnumerable<double> source)
 {
     var values = source.Order().ToArray();
@@ -236,7 +315,14 @@ static string[] ReadDictionary(string path)
         value.ValueKind == JsonValueKind.String ? value.GetString() : throw new InvalidDataException($"Dictionary term is not text: {path}")));
 }
 
-static async Task<string> Transcribe(HttpClient http, byte[] audio, string format, string key, string model, string? style,
+static Task<string> Transcribe(HttpClient http, byte[] audio, string format, string key, string service, string model, string? style,
+    IReadOnlyList<string> dictionaryTerms, string? provider = null, string? language = null, string? locales = null,
+    bool xaiFormat = false, bool fillerWords = false, double? vadThreshold = null) =>
+    service == "xai"
+        ? TranscribeXai(http, audio, format, key, model, dictionaryTerms, language, xaiFormat, fillerWords, vadThreshold)
+        : TranscribeOpenRouter(http, audio, format, key, model, style, dictionaryTerms, provider, language, locales);
+
+static async Task<string> TranscribeOpenRouter(HttpClient http, byte[] audio, string format, string key, string model, string? style,
     IReadOnlyList<string> dictionaryTerms, string? provider = null, string? language = null, string? locales = null)
 {
     using var request = new HttpRequestMessage(HttpMethod.Post, "https://openrouter.ai/api/v1/audio/transcriptions");
@@ -294,6 +380,46 @@ static async Task<string> Transcribe(HttpClient http, byte[] audio, string forma
     return text.GetString()!.Trim();
 }
 
+static async Task<string> TranscribeXai(HttpClient http, byte[] audio, string format, string key, string model,
+    IReadOnlyList<string> dictionaryTerms, string? language, bool formatText, bool fillerWords, double? vadThreshold)
+{
+    if (dictionaryTerms.Count > 100)
+        throw new InvalidOperationException($"xAI accepts at most 100 keyterms; this sample has {dictionaryTerms.Count}.");
+    var longTerm = dictionaryTerms.FirstOrDefault(term => term.Length > 50);
+    if (longTerm is not null)
+        throw new InvalidOperationException($"xAI keyterms are limited to 50 characters; '{longTerm}' is longer.");
+
+    using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.x.ai/v1/stt");
+    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+    using var form = new MultipartFormDataContent();
+    form.Add(new StringContent(model), "model");
+    if (!string.IsNullOrWhiteSpace(language)) form.Add(new StringContent(language), "language");
+    if (formatText) form.Add(new StringContent("true"), "format");
+    if (fillerWords) form.Add(new StringContent("true"), "filler_words");
+    if (vadThreshold.HasValue)
+        form.Add(new StringContent(vadThreshold.Value.ToString(CultureInfo.InvariantCulture)), "vad_threshold");
+    foreach (var term in dictionaryTerms) form.Add(new StringContent(term), "keyterm");
+    var file = new ByteArrayContent(audio);
+    file.Headers.ContentType = new MediaTypeHeaderValue(format.ToLowerInvariant() switch
+    {
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        _ => "application/octet-stream"
+    });
+    form.Add(file, "file", $"audio.{format.ToLowerInvariant()}"); // xAI requires file to be the final multipart field.
+    request.Content = form;
+
+    using var response = await http.SendAsync(request);
+    var body = await response.Content.ReadAsByteArrayAsync();
+    if (!response.IsSuccessStatusCode)
+        throw new HttpRequestException($"HTTP {(int)response.StatusCode}: {Encoding.UTF8.GetString(body)}");
+    using var json = JsonDocument.Parse(body);
+    if (!json.RootElement.TryGetProperty("text", out var text) || text.ValueKind != JsonValueKind.String)
+        throw new InvalidDataException("xAI returned no transcript.");
+    return text.GetString()!.Trim();
+}
+
 static string Money(decimal? value) => value.HasValue ? $"${value.Value:F6}" : "n/a";
 
 internal sealed class UsageCaptureHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
@@ -324,7 +450,7 @@ internal sealed class UsageCaptureHandler(HttpMessageHandler inner) : Delegating
                 InputTokens = Integer(usage, "input_tokens");
                 OutputTokens = Integer(usage, "output_tokens");
                 TotalTokens = Integer(usage, "total_tokens");
-                Cost = Decimal(usage, "cost");
+                Cost = Decimal(usage, "cost") ?? (Decimal(usage, "cost_in_usd_ticks") is { } ticks ? ticks / 10_000_000_000m : null);
             }
         }
         catch (JsonException) { }
@@ -348,7 +474,8 @@ internal sealed record Aggregate(int Samples, int Successful, double AudioSecond
     double MedianRequestMs, double P90RequestMs, double P95RequestMs, double MeanRequestMs, int WordErrors, int ReferenceWords,
     double MicroWordErrorRate, double MacroWordErrorRate, decimal? ReportedCost, int ReportedCostSamples,
     decimal EstimatedCost);
-internal sealed record Report(DateTimeOffset RunAt, string SourceFolder, string Model, string? Style, string ReferenceWarning,
+internal sealed record Report(DateTimeOffset RunAt, string SourceFolder, string Service, string Model, string? Style,
+    string? Language, bool XaiFormat, bool FillerWords, double? VadThreshold, bool DictionaryEnabled, string ReferenceWarning,
     string EquivalencePolicy,
     Aggregate Aggregate, SampleResult[] Results);
 

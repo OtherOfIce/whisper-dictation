@@ -54,20 +54,30 @@ function summarizeCosts(rows) {
   return { voice, cleanup, voiceCount, cleanupCount, models: [...models.values()].sort((a, b) => a.category.localeCompare(b.category) || b.amount - a.amount) };
 }
 
-function getCostStats(history, since = null) {
+function getCostStats(history, since = null, includeModels = []) {
   const rows = [];
   for (const entry of Array.isArray(history) ? history : []) {
-    if (since && new Date(entry?.metrics?.started) < since) continue;
-    rows.push(...(Array.isArray(entry?.metrics?.costs) ? entry.metrics.costs : []));
+    for (const version of [entry, ...(Array.isArray(entry?.alternatives) ? entry.alternatives : [])]) {
+      const started = new Date(version?.metrics?.transcribedAt || version?.metrics?.started);
+      for (const cost of Array.isArray(version?.metrics?.costs) ? version.metrics.costs : []) {
+        // The activity ledger only covers OpenRouter. Costs recorded locally for
+        // providers outside it (direct xAI streaming estimates) are always kept.
+        if (since && started < since && !includeModels.includes(cost?.model)) continue;
+        rows.push(cost);
+      }
+    }
   }
   return summarizeCosts(rows);
 }
+
+// Models whose spend can never appear in the OpenRouter activity ledger.
+const nonLedgerModels = ['grok-voice-transcribe-2.0'];
 
 function getDisplayedCostStats(history, ledger, now = new Date()) {
   if (!Array.isArray(ledger?.rows)) return { ...getCostStats(history), source: 'history' };
   const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const remote = ledger.rows;
-  const localToday = getCostStats(history, today).models;
+  const localToday = getCostStats(history, today, nonLedgerModels).models;
   return { ...summarizeCosts([...remote, ...localToday]), source: 'activity', through: ledger.through, importedAt: ledger.importedAt };
 }
 

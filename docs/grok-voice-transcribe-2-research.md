@@ -164,6 +164,62 @@ and billed cost. Test `format=false` and the production language with
 `format=true`, because text normalization can affect apparent word accuracy.
 Keep keyterms identical where the providers allow it.
 
+The evaluator now supports the direct endpoint. With `XAI_API_KEY` set, run
+the formatted English condition with:
+
+```powershell
+dotnet run --project tools/transcribe-eval/TranscribeEval.csproj -c Release -- --source artifacts/wispr-corpus/normal --service xai --model grok-voice-transcribe-2.0 --language en --xai-format true --parallelism 4 --price-per-hour 0.10 --output artifacts/transcribe-eval-normal-grok-voice-transcribe-2-formatted.json
+```
+
+Run a second condition without `--xai-format true` to separate recognition
+quality from xAI's number, currency, and unit formatting.
+
+### Local REST result
+
+Run on 2026-09-18 against the 30 reviewed clips in
+`artifacts/wispr-corpus/normal`. The corpus contains 438.688 seconds of audio
+and 850 reference words. Both Grok conditions received the same sample-specific
+dictionary snapshots as the existing comparison. The snapshots contained 29
+to 34 terms, within xAI's limit of 100 terms and 50 characters per term.
+
+| Model | Exact clips | Word errors | Micro-WER | Macro-WER | Median request | P90 request |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| MAI Transcribe 2 clean | 21/30 | 33 | 3.88% | 3.07% | 606 ms | 933 ms |
+| MAI Transcribe 2 verbatim | 20/30 | 40 | 4.71% | 3.50% | 503 ms | 959 ms |
+| GPT Transcribe | 16/30 | 48 | 5.65% | 5.22% | 873 ms | 1,487 ms |
+| Grok Voice Transcribe 2.0, unformatted | 16/30 | 56 | 6.59% | 5.80% | 831 ms | 1,667 ms |
+| Grok Voice Transcribe 2.0, `format=true` | 16/30 | 65 | 7.65% | 6.94% | 1,000 ms | 1,722 ms |
+
+The equivalence policy treats `first` and `1st` as the same word. This removes
+two false errors from Grok's formatted run. It does not change the unformatted
+score or the three comparison baselines.
+
+Grok unformatted beat MAI clean on 2 clips, tied on 17, and lost on 11. Its
+main misses were substantive rather than formatting differences: `Onoki`
+became `a Noki`, `Minato` became `Monado`, `Opus 5 high` became `Opus for Hope
+winning`, and one profane sentence was badly misheard. It also retained or
+introduced several false starts and fillers that MAI clean removed.
+
+Dictionary delivery was checked separately before the full run. On the
+Hashirama/Raikage clip, the control request without keyterms produced
+`Hashiraba`; the request with all 30 repeated `keyterm` fields produced
+`Hashirama`. After accepting `first`/`1st`, the biased transcript is an exact
+match. Across the full unformatted run, Grok retained 12 of 13 exact dictionary
+term occurrences in the references. MAI clean retained 13 of 13 and GPT
+Transcribe retained 11 of 13. Grok's remaining miss was `Onoki`, even though
+the request included it as a keyterm. Biasing works, but it does not force the
+spelling.
+
+The two Grok conditions were separate one-shot runs, so differences between
+them include model variation and request timing. The formatted run's lower
+accuracy is not enough evidence that inverse text normalization itself causes
+recognition errors. It is enough to prefer the unformatted condition for any
+follow-up streaming prototype.
+
+These results do not support replacing MAI clean with Grok's REST path. A
+streaming prototype could still be worthwhile as a latency experiment, but it
+should not be presented as an accuracy upgrade on this corpus.
+
 ### Gate 2: streaming prototype
 
 Only proceed if 2.0 passes the quality gate or if the latency opportunity is
@@ -183,9 +239,31 @@ Turn should be separate conditions rather than mixed into the first result.
 
 The existing `Recorder` already captures mono PCM16 at 16 kHz and raises live
 chunks from 40 ms input buffers. Its encoding matches xAI's streaming API.
-The prototype can aggregate those callbacks into roughly 100 ms WebSocket
-frames rather than replacing audio capture. The larger work is session
-lifetime, backpressure, partial-result state, finalization, and reconnects.
+The integration aggregates those callbacks into 100 ms WebSocket frames rather
+than replacing audio capture.
+
+## Local Whisper integration
+
+An experimental desktop mode is implemented behind the model choice `Grok
+Voice Transcribe 2.0 · Streaming`:
+
+- The recorder sends its native mono 16 kHz PCM continuously. Connection setup
+  begins with recording, and early microphone frames wait for
+  `transcript.created`.
+- Stop sends `audio.done`; cleanup and paste wait for `transcript.done`.
+- Dictionary entries are repeated `keyterm` query parameters. Selecting Grok
+  rejects more than 100 entries or entries longer than 50 characters, so
+  biasing is never silently weakened.
+- The xAI key is stored separately from the OpenRouter key using Windows DPAPI.
+  Optional Luna cleanup continues to require OpenRouter.
+- Timing history separates connection, overlapping audio streaming, and
+  post-stop finalization. Cost is estimated at the documented streaming rate.
+  A failed stream is retained and can be retried through xAI's batch endpoint.
+
+The first version deliberately uses `interim_results=false`: it streams audio
+early for latency but exposes only the final transcript, matching the app's
+paste-on-stop interaction. Live partial text can be added later without
+coupling it to the transport implementation.
 
 ## Unknowns that require measurement
 

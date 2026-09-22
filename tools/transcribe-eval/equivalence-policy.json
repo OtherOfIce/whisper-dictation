@@ -10,7 +10,8 @@
     ["behaviour", "behavior"],
     ["humour", "humor"],
     ["practise", "practice"],
-    ["spoilt", "spoiled"]
+    ["spoilt", "spoiled"],
+    ["first", "1st"]
   ],
   "phraseGroups": [
     ["Wispr Flow", "Whisperflow"]

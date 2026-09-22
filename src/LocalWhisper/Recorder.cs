@@ -2,13 +2,15 @@ using NAudio.Wave;
 
 namespace LocalWhisper;
 
+internal enum RecorderMode { AtStop, AtPauses, Stream }
+
 internal sealed class Recorder : IDisposable
 {
     private readonly WaveInEvent input = new() { DeviceNumber = -1, WaveFormat = new WaveFormat(16000, 16, 1), BufferMilliseconds = 40 };
     private readonly PauseChunks buffer = new();
     private readonly MemoryStream recording = new();
     private long totalBytes;
-    private readonly bool live;
+    private readonly RecorderMode mode;
     public event Action<byte[]>? ChunkReady;
     private readonly TaskCompletionSource stopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly object gate = new();
@@ -17,9 +19,10 @@ internal sealed class Recorder : IDisposable
     public float Level { get; private set; }
     public double Seconds { get { lock (gate) return totalBytes / 32000d; } }
     public bool HasStopped => stopped.Task.IsCompleted;
-    public Recorder(bool live = false)
+    public Recorder(bool live = false) : this(live ? RecorderMode.AtPauses : RecorderMode.AtStop) { }
+    public Recorder(RecorderMode mode)
     {
-        this.live = live;
+        this.mode = mode;
         input.DataAvailable += (_, e) =>
         {
             byte[]? chunk = null;
@@ -34,7 +37,12 @@ internal sealed class Recorder : IDisposable
                 for (var i = 0; i + 1 < count; i += 2)
                     peak = Math.Max(peak, Math.Abs(BitConverter.ToInt16(e.Buffer, i) / 32768f));
                 Level = peak;
-                chunk = buffer.Add(e.Buffer, count, live ? peak : 1);
+                if (mode == RecorderMode.Stream)
+                {
+                    chunk = new byte[count];
+                    Buffer.BlockCopy(e.Buffer, 0, chunk, 0, count);
+                }
+                else chunk = buffer.Add(e.Buffer, count, mode == RecorderMode.AtPauses ? peak : 1);
             }
             if (chunk is not null) ChunkReady?.Invoke(chunk);
         };
@@ -49,7 +57,7 @@ internal sealed class Recorder : IDisposable
     {
         if (!stopping) { stopping = true; input.StopRecording(); }
         await stopped.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        lock (gate) return buffer.Drain();
+        lock (gate) return mode == RecorderMode.Stream ? [] : buffer.Drain();
     }
     public async Task<byte[]> StopAsync()
     {

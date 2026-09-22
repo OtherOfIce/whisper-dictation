@@ -14,14 +14,14 @@ internal sealed class EngineApp : ApplicationContext
     private readonly Channel<object> output = Channel.CreateUnbounded<object>();
     private readonly JsonSerializerOptions json = new(JsonSerializerDefaults.Web);
     private Recorder? recorder;
-    private TranscriptionSession? session;
+    private ITranscriptionSession? session;
     private Task<InsertionContext>? insertionContext;
     private SessionMetrics? metrics;
     private IDisposable? recordingStage;
     private CancellationTokenSource? operation;
     private readonly Dictionary<string, (byte[] Audio, string TranscriptionModel, string[] Dictionary)> failedAudio = new();
     private readonly LinkedList<string> failedOrder = new();
-    private string apiKey = "", cleanupMode = CleanupService.Off, transcriptionModel = TranscriptionModels.MaiClean, entryId = "";
+    private string apiKey = "", xaiApiKey = "", cleanupMode = CleanupService.Off, transcriptionModel = TranscriptionModels.MaiClean, entryId = "";
     private string? processingPhase;
     private string[] dictionaryTerms = [];
     private nint target;
@@ -41,7 +41,7 @@ internal sealed class EngineApp : ApplicationContext
         });
         try { Settings.RemoveLegacyBalanceKey(); }
         catch { Notify("The old saved management key could not be removed. Delete balance-key.bin from LocalWhisper's local app data folder."); }
-        try { apiKey = Settings.LoadKey(); liveChunks = Settings.LiveChunks; lockMode = Settings.LockMode; cleanupMode = Settings.CleanupMode; transcriptionModel = Settings.TranscriptionModel; dictionaryTerms = Settings.LoadDictionaryTerms(); }
+        try { apiKey = Settings.LoadKey(); xaiApiKey = Settings.LoadXaiKey(); liveChunks = Settings.LiveChunks; lockMode = Settings.LockMode; cleanupMode = Settings.CleanupMode; transcriptionModel = Settings.TranscriptionModel; dictionaryTerms = Settings.LoadDictionaryTerms(); }
         catch { Notify("Saved settings could not be read. Please open Settings."); }
         gesture = new Gesture(lockMode);
         if (!noHook)
@@ -83,7 +83,7 @@ internal sealed class EngineApp : ApplicationContext
             if (!exiting) dispatcher.BeginInvoke(ExitThread);
         });
     }
-    private object SettingsState() => new { hasKey = !string.IsNullOrWhiteSpace(apiKey), liveChunks, lockMode, cleanupMode, transcriptionModel, dictionaryTerms };
+    private object SettingsState() => new { hasKey = !string.IsNullOrWhiteSpace(apiKey), hasXaiKey = !string.IsNullOrWhiteSpace(xaiApiKey), liveChunks, lockMode, cleanupMode, transcriptionModel, dictionaryTerms };
     private void Emit(object value) => output.Writer.TryWrite(value);
     private void Notify(string message) => Emit(new { type = "notice", message });
     private void PublishState() => Emit(new { type = "state", mode = cancelled || metrics?.Snapshot().PasteMs is not null ? "Idle" : gesture.Mode.ToString(), phase = processingPhase, level = recorder?.Level ?? 0, id = entryId, metrics = metrics?.Snapshot() });
@@ -116,7 +116,11 @@ internal sealed class EngineApp : ApplicationContext
                         if (terms.ValueKind != JsonValueKind.Array) throw new InvalidOperationException("Invalid dictionary.");
                         nextDictionary = Vocabulary.Normalize(terms.EnumerateArray().Select(term => term.GetString()));
                     }
+                    var nextModel = values.TryGetProperty("transcriptionModel", out var selectedModel)
+                        ? selectedModel.GetString() ?? "" : transcriptionModel;
+                    if (TranscriptionModels.IsStreaming(nextModel)) XaiTranscription.ValidateKeyterms(nextDictionary);
                     if (values.TryGetProperty("apiKey", out var key) && !string.IsNullOrWhiteSpace(key.GetString())) { Settings.SaveKey(key.GetString()!.Trim()); apiKey = Settings.LoadKey(); }
+                    if (values.TryGetProperty("xaiApiKey", out var xaiKey) && !string.IsNullOrWhiteSpace(xaiKey.GetString())) { Settings.SaveXaiKey(xaiKey.GetString()!.Trim()); xaiApiKey = Settings.LoadXaiKey(); }
                     if (values.TryGetProperty("liveChunks", out var live)) { liveChunks = live.GetBoolean(); Settings.SaveLiveChunks(liveChunks); }
                     if (values.TryGetProperty("lockMode", out var lockSetting)) { lockMode = lockSetting.GetBoolean(); Settings.SaveLockMode(lockMode); gesture.LockByDefault = lockMode; }
                     if (values.TryGetProperty("cleanupMode", out var cleanup)) { Settings.SaveCleanupMode(cleanup.GetString() ?? ""); cleanupMode = Settings.CleanupMode; }
@@ -133,6 +137,13 @@ internal sealed class EngineApp : ApplicationContext
                 case "retranscribe":
                     result = await RetranscribeAsync(command.GetProperty("params").GetProperty("id").GetString() ?? "");
                     break;
+                case "transcribeFile":
+                    var fileParams = command.GetProperty("params");
+                    result = await TranscribeFileAsync(fileParams.GetProperty("path").GetString() ?? "",
+                        fileParams.GetProperty("format").GetString() ?? "wav",
+                        fileParams.GetProperty("model").GetString() ?? "",
+                        fileParams.TryGetProperty("fallback", out var fallbackValue) && fallbackValue.GetBoolean());
+                    break;
                 case "cancel": Cancel(); break;
                 case "finish":
                     var finishParams = command.TryGetProperty("params", out var suppliedFinishParams) ? suppliedFinishParams : default;
@@ -142,30 +153,38 @@ internal sealed class EngineApp : ApplicationContext
             }
             Emit(new { type = "reply", id, result });
         }
-            catch (Exception ex) { Emit(new { type = "reply", id, error = ex is InvalidOperationException or HttpRequestException ? ex.Message : "The request failed. Check your key or connection and try again." }); }
+            catch (Exception ex) { Emit(new { type = "reply", id, error = ex is InvalidOperationException or HttpRequestException or AggregateException ? ex.Message : "The request failed. Check your key or connection and try again." }); }
     }
     private void Apply(GestureAction action, bool restoreTarget = false)
     {
         if (exiting) return;
         if (action == GestureAction.Start)
         {
-            if (string.IsNullOrWhiteSpace(apiKey)) { gesture.Reset(); Emit(new { type = "needsSettings" }); return; }
+            var grokStreaming = TranscriptionModels.IsStreaming(transcriptionModel);
+            if ((grokStreaming && string.IsNullOrWhiteSpace(xaiApiKey))
+                || (!grokStreaming && string.IsNullOrWhiteSpace(apiKey))
+                || (cleanupMode != CleanupService.Off && string.IsNullOrWhiteSpace(apiKey)))
+            { gesture.Reset(); Emit(new { type = "needsSettings" }); return; }
             target = Native.GetForegroundWindow(); cancelled = false; processingPhase = null;
             metrics = new SessionMetrics(); entryId = Guid.NewGuid().ToString("N");
+            metrics.TranscriptionModel = transcriptionModel; metrics.RequestedTranscriptionModel = transcriptionModel; metrics.CleanupMode = cleanupMode;
             operation = new CancellationTokenSource();
             insertionContext = cleanupMode == CleanupService.Off ? null : TargetContext.CaptureAsync(target, operation.Token);
-            session = new TranscriptionSession(http, apiKey, metrics, operation.Token, dictionaryTerms, transcriptionModel);
             recordingStage = metrics.Measure("Recording"); lastTick = Environment.TickCount64;
             try
             {
-                recorder = new Recorder(liveChunks);
-                var active = session; recorder.ChunkReady += active.EnqueuePcm;
+                session = grokStreaming
+                    ? new XaiStreamingSession(xaiApiKey, metrics, operation.Token, dictionaryTerms)
+                    : new TranscriptionSession(http, apiKey, metrics, operation.Token, dictionaryTerms, transcriptionModel);
+                var recorderMode = grokStreaming ? RecorderMode.Stream : liveChunks ? RecorderMode.AtPauses : RecorderMode.AtStop;
+                recorder = new Recorder(recorderMode);
+                recorder.ChunkReady += session.EnqueuePcm;
                 using (metrics.Measure("Open microphone")) recorder.Start();
             }
             catch (Exception ex)
             {
                 recorder?.Dispose(); recorder = null; gesture.Reset();
-                operation.Dispose(); operation = null;
+                operation.Cancel(); operation.Dispose(); operation = null; session = null;
                 insertionContext = null;
                 recordingStage.Dispose(); recordingStage = null;
                 metrics.Complete("Microphone error"); metrics = null;
@@ -196,13 +215,35 @@ internal sealed class EngineApp : ApplicationContext
                 }
             });
             cancellation.Token.ThrowIfCancellationRequested();
-            if (pcm.Length < 6400 && active.Count == 0) { outcome = "Too short"; return; }
-            active.EnqueuePcm(pcm); rawText = await active.FinishAsync(); text = rawText;
-            if (active.Failed > 0)
+            if (audio is null || audio.Length < 6444) { cancellation.Cancel(); outcome = "Too short"; return; }
+            active.EnqueuePcm(pcm);
+            Exception? primaryFailure = null;
+            try { rawText = await active.FinishAsync(); }
+            catch (Exception ex) when (ModelTranscription.CanFallback(ex, cancellation.Token)) { primaryFailure = ex; }
+            if (string.IsNullOrWhiteSpace(rawText) && primaryFailure is null)
+                primaryFailure = new InvalidDataException("The selected model returned no transcript.");
+            if (active.Failed > 0 || primaryFailure is not null)
             {
-                if (audio is not null) KeepFailedAudio(id, audio, transcriptionModel, dictionaryTerms);
-                Notify("Some audio could not be transcribed after retries. The partial transcript was kept and the full recording was saved in History.");
+                var partialText = rawText;
+                trace.Fallback(transcriptionModel, primaryFailure?.Message ?? active.LastError ?? "Part of the recording could not be transcribed.");
+                try
+                {
+                    var encoded = EncodeAudio(audio, trace, "Fallback · ");
+                    var fallback = await CreateModelTranscription(trace, dictionaryTerms).TranscribeWithFallbackAsync(
+                        encoded.Bytes, encoded.Format, transcriptionModel, dictionaryTerms, trace, cancellation.Token,
+                        skipRequested: !TranscriptionModels.IsStreaming(transcriptionModel)).ConfigureAwait(false);
+                    rawText = fallback.Text;
+                    if (fallback.UsedModel != transcriptionModel)
+                        Notify($"{ModelLabel(transcriptionModel)} failed. {ModelLabel(fallback.UsedModel)} produced the transcript instead.");
+                }
+                catch when (!string.IsNullOrWhiteSpace(partialText))
+                {
+                    rawText = partialText;
+                    KeepFailedAudio(id, audio, transcriptionModel, dictionaryTerms);
+                    Notify("Every fallback model failed. The partial transcript and full recording were kept in History.");
+                }
             }
+            text = rawText;
             cancellation.Token.ThrowIfCancellationRequested();
             if (text.Length == 0) { outcome = "No speech"; return; }
             if (cleanupMode != CleanupService.Off)
@@ -238,7 +279,7 @@ internal sealed class EngineApp : ApplicationContext
         }
         finally
         {
-            trace.Complete(outcome); cancellation.Dispose(); operation = null; metrics = null; session = null; insertionContext = null; processingPhase = null; gesture.Reset();
+            trace.Complete(outcome); cancellation.Cancel(); cancellation.Dispose(); operation = null; metrics = null; session = null; insertionContext = null; processingPhase = null; gesture.Reset();
             if (!exiting)
             {
                 PublishState();
@@ -246,6 +287,57 @@ internal sealed class EngineApp : ApplicationContext
                 _ = UpdateCompletedMetricsAsync(id, trace);
             }
         }
+    }
+    private ModelTranscription CreateModelTranscription(SessionMetrics trace, IReadOnlyList<string> dictionary)
+    {
+        var grokDictionaryCompatible = dictionary.Count <= 100 && dictionary.All(term => term.Length <= 50);
+        return new ModelTranscription(async (model, audio, format, terms, token) =>
+        {
+            if (TranscriptionModels.IsStreaming(model))
+                return await new XaiBatchTranscriber(http).TranscribeAsync(audio, format, xaiApiKey, terms, trace, token).ConfigureAwait(false);
+            return await new Transcriber(http).TranscribeAsync(audio, apiKey, token, trace,
+                $"Fallback {ModelLabel(model)} · ", format, terms, model).ConfigureAwait(false);
+        }, model => TranscriptionModels.IsStreaming(model)
+            ? !string.IsNullOrWhiteSpace(xaiApiKey) && grokDictionaryCompatible
+            : !string.IsNullOrWhiteSpace(apiKey));
+    }
+    private static string ModelLabel(string model) => model switch
+    {
+        TranscriptionModels.Gpt => "GPT-Transcribe",
+        TranscriptionModels.MaiVerbatim => "MAI-Transcribe-2 Verbatim",
+        TranscriptionModels.MaiClean => "MAI-Transcribe-2 Clean",
+        TranscriptionModels.GrokStreaming => "Grok Voice Transcribe 2.0",
+        _ => model
+    };
+    private static (byte[] Bytes, string Format) EncodeAudio(byte[] wav, SessionMetrics metrics, string prefix = "")
+    {
+        using (metrics.Measure(prefix + "Compress audio"))
+        {
+            try { return AudioEncoding.Compress(wav); }
+            catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or InvalidOperationException)
+            {
+                using (metrics.Measure(prefix + "MP3 unavailable; using WAV")) return (wav, "wav");
+            }
+        }
+    }
+    private async Task<object> TranscribeFileAsync(string path, string format, string model, bool useFallback)
+    {
+        if (!TranscriptionModels.IsValid(model)) throw new InvalidOperationException("Choose a valid transcription model.");
+        var fullPath = Path.GetFullPath(path);
+        var info = new FileInfo(fullPath);
+        if (!info.Exists || info.Length is <= 44 or > 50 * 1024 * 1024) throw new InvalidOperationException("The saved recording is unavailable or invalid.");
+        var source = await File.ReadAllBytesAsync(fullPath).ConfigureAwait(false);
+        var comparisonMetrics = new SessionMetrics { CleanupMode = CleanupService.Off };
+        comparisonMetrics.Audio(Transcriber.EstimateAudioSeconds(source, format), source.Length);
+        var encoded = string.Equals(format, "wav", StringComparison.OrdinalIgnoreCase)
+            ? EncodeAudio(source, comparisonMetrics)
+            : (Bytes: source, Format: format);
+        var modelTranscription = CreateModelTranscription(comparisonMetrics, dictionaryTerms);
+        var result = useFallback
+            ? await modelTranscription.TranscribeWithFallbackAsync(encoded.Bytes, encoded.Format, model, dictionaryTerms, comparisonMetrics, CancellationToken.None).ConfigureAwait(false)
+            : await modelTranscription.TranscribeExactAsync(encoded.Bytes, encoded.Format, model, dictionaryTerms, comparisonMetrics, CancellationToken.None).ConfigureAwait(false);
+        comparisonMetrics.Complete(useFallback ? "Retried" : "Alternate transcript");
+        return new { text = result.Text, rawText = result.Text, metrics = comparisonMetrics.Snapshot() };
     }
     private void KeepFailedAudio(string id, byte[] audio, string model, string[] dictionary)
     {
@@ -268,8 +360,15 @@ internal sealed class EngineApp : ApplicationContext
             if (!failedAudio.TryGetValue(id, out saved))
                 throw new InvalidOperationException("No saved recording is available for retry. Play back the audio or dictate again.");
         }
-        if (string.IsNullOrWhiteSpace(apiKey)) throw new InvalidOperationException("Add an OpenRouter API key in Settings first.");
+        var grok = TranscriptionModels.IsStreaming(saved.TranscriptionModel);
+        if (grok && string.IsNullOrWhiteSpace(xaiApiKey)) throw new InvalidOperationException("Add an xAI API key in Settings first.");
+        if (!grok && string.IsNullOrWhiteSpace(apiKey)) throw new InvalidOperationException("Add an OpenRouter API key in Settings first.");
         var retryMetrics = new SessionMetrics();
+        // Retries skip AI cleanup and paste the raw transcript, so the recorded
+        // cleaner is off even when the original attempt used Luna.
+        retryMetrics.TranscriptionModel = saved.TranscriptionModel;
+        retryMetrics.RequestedTranscriptionModel = saved.TranscriptionModel;
+        retryMetrics.CleanupMode = CleanupService.Off;
         (byte[] Bytes, string Format) encoded;
         using (retryMetrics.Measure("Compress audio"))
         {
@@ -279,8 +378,10 @@ internal sealed class EngineApp : ApplicationContext
                 using (retryMetrics.Measure("MP3 unavailable; using WAV")) encoded = (saved.Audio, "wav");
             }
         }
-        var text = await new Transcriber(http).TranscribeAsync(encoded.Bytes, apiKey, CancellationToken.None,
-            retryMetrics, "", encoded.Format, saved.Dictionary, saved.TranscriptionModel).ConfigureAwait(false);
+        var text = grok
+            ? await new XaiBatchTranscriber(http).TranscribeAsync(encoded.Bytes, encoded.Format, xaiApiKey, saved.Dictionary, retryMetrics, CancellationToken.None).ConfigureAwait(false)
+            : await new Transcriber(http).TranscribeAsync(encoded.Bytes, apiKey, CancellationToken.None,
+                retryMetrics, "", encoded.Format, saved.Dictionary, saved.TranscriptionModel).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(text)) throw new InvalidOperationException("The retry returned no speech. Try again.");
         retryMetrics.Complete("Retried");
         lock (failedAudio) { failedAudio.Remove(id); failedOrder.Remove(id); }

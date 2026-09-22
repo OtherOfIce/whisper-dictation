@@ -13,13 +13,14 @@ const icons = {
   arrow: '<path d="M4 12h16m-6-6 6 6-6 6"/>',
   minus: '<path d="M4 12h16"/>', square: '<rect x="5" y="5" width="14" height="14" rx="1"/>',
   x: '<path d="m6 6 12 12M18 6 6 18"/>', download: '<path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/>',
-  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/>'
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/>',
+  compare: '<path d="M4 6h6v12H4zM14 6h6v12h-6zM10 9h4m-4 6h4"/>'
 };
 function icon(name) { const span = document.createElement('span'); span.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.wave}</svg>`; return span; }
 document.querySelectorAll('[data-icon]').forEach(node => node.replaceWith(icon(node.dataset.icon)));
 const $ = id => document.getElementById(id);
 const call = (method, params) => window.whisper.call(method, params);
-let history = [], selectedId = null, pageSize = 100, toastTimer, latestBalance;
+let history = [], selectedId = null, comparisonId = null, currentSettings = {}, pageSize = 100, toastTimer, latestBalance;
 let activeAudio = null, activeAudioId = null, activeAudioButton = null, activeAudioUrl = null;
 function renderWordStats(stats) {
   if (!stats) return;
@@ -32,7 +33,7 @@ function navigate(view) {
   if (view !== 'history') stopAudio();
   $('history-view').hidden = view !== 'history'; $('settings-view').hidden = view !== 'settings';
   document.querySelectorAll('[data-view]').forEach(button => button.classList.toggle('selected', button.dataset.view === view));
-  closeDrawer();
+  closeDrawers();
 }
 document.querySelectorAll('[data-view]').forEach(button => button.onclick = () => navigate(button.dataset.view));
 document.querySelectorAll('[data-window]').forEach(button => button.onclick = () => call(button.dataset.window).catch(error => toast(error.message)));
@@ -76,13 +77,32 @@ function renderHistory() {
     const time = document.createElement('time'); time.dateTime = date.toISOString(); time.textContent = date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
     const text = document.createElement('div'); text.className = 'transcript-text'; text.textContent = entry.text || entry.metrics.outcome;
     if (!entry.text) text.classList.add('empty');
+    const details = transcriptMetaFacts(entry.metrics);
+    let meta = null;
+    if (details.length) {
+      meta = document.createElement('div'); meta.className = 'transcript-meta';
+      const wrap = document.createElement('span'); wrap.className = 'meta-details';
+      const infoButton = document.createElement('button'); infoButton.type = 'button'; infoButton.className = 'meta-info';
+      infoButton.title = 'Show transcription details'; infoButton.setAttribute('aria-label', 'Show transcription details');
+      infoButton.append(icon('info'));
+      const popover = document.createElement('span'); popover.className = 'meta-popover'; popover.setAttribute('role', 'tooltip');
+      for (const [name, value] of details) {
+        const row = document.createElement('span'); row.className = 'meta-popover-row';
+        const label = document.createElement('span'); label.textContent = name;
+        const val = document.createElement('strong'); val.textContent = value;
+        row.append(label, val); popover.append(row);
+      }
+      wrap.append(infoButton, popover); meta.append(wrap);
+    }
     const actions = document.createElement('div'); actions.className = 'transcript-actions';
     const play = action('play', entry.hasAudio ? 'Play audio' : 'No saved audio', () => toggleAudio(entry, play));
     const download = action('download', entry.hasAudio ? 'Download audio' : 'No saved audio', () => call('downloadAudio', { id: entry.id }).then(saved => { if (saved) toast('Recording downloaded'); }).catch(error => toast(error.message)));
     play.disabled = download.disabled = !entry.hasAudio;
     const copy = action('copy', 'Copy transcript', () => call('copy', { id: entry.id }).then(() => toast('Transcript copied')).catch(error => toast(error.message)));
     copy.disabled = !entry.text;
-    actions.append(play, download, copy);
+    const compare = action('compare', entry.hasAudio ? 'Compare transcripts' : 'No saved audio to compare', () => openComparison(entry.id));
+    compare.disabled = !entry.hasAudio;
+    actions.append(play, download, compare, copy);
     if (!entry.text && entry.hasAudio) {
       const retry = action('refresh', 'Retry transcription', async () => {
         retry.disabled = true;
@@ -96,7 +116,7 @@ function renderHistory() {
       if (activeAudioId === entry.id) stopAudio();
       try { await call('delete', { id: entry.id }); toast('Transcript deleted'); } catch (error) { toast(error.message); }
     }));
-    article.append(time, text, actions); group.append(article);
+    article.append(time, text, ...(meta ? [meta] : []), actions); group.append(article);
   }
   if (!filtered.length) {
     const empty = document.createElement('div'); empty.className = 'empty-state';
@@ -113,13 +133,47 @@ const money = (number, digits = 2) => number == null ? '—' : new Intl.NumberFo
 const modelNames = {
   'openai/gpt-transcribe': 'GPT-Transcribe',
   'microsoft/mai-transcribe-2': 'MAI-Transcribe-2',
-  'openai/gpt-5.6-luna': 'Luna',
+  'openai/gpt-5.6-luna': 'Luna 5.6',
+  'openai/gpt-6-luna': 'Luna 6',
   'gpt-transcribe': 'GPT-Transcribe',
   'mai-transcribe-2-verbatim': 'MAI-Transcribe-2 · Verbatim',
   'mai-transcribe-2-clean': 'MAI-Transcribe-2 · Clean',
-  luna: 'Luna',
-  'luna-fast': 'Luna Fast'
+  'grok-voice-transcribe-2.0': 'Grok Voice Transcribe 2.0',
+  'grok-voice-transcribe-2-streaming': 'Grok Voice Transcribe 2.0 · Streaming',
+  luna: 'Luna 6',
+  'luna-fast': 'Luna 6 Fast'
 };
+// Per-entry pipeline provenance. Entries recorded before model tracking have
+// no fields and yield no facts, so old history renders unchanged.
+function pipelineFacts(metrics) {
+  const facts = [];
+  const model = typeof metrics?.transcriptionModel === 'string' && metrics.transcriptionModel
+    ? (modelNames[metrics.transcriptionModel] || metrics.transcriptionModel) : '';
+  if (!model) return facts;
+  const requested = typeof metrics?.requestedTranscriptionModel === 'string' && metrics.requestedTranscriptionModel
+    ? (modelNames[metrics.requestedTranscriptionModel] || metrics.requestedTranscriptionModel) : '';
+  facts.push(['Voice model', requested && requested !== model ? `${requested} → ${model}` : model]);
+  const cleanup = metrics.cleanupMode;
+  facts.push(['Cleanup', !cleanup || cleanup === 'off' ? 'Off' : (modelNames[cleanup] || cleanup)]);
+  return facts;
+}
+// Details shown behind the history info icon: pipeline provenance plus the
+// timing facts that explain how long a transcript took to come back.
+function transcriptMetaFacts(metrics) {
+  const facts = pipelineFacts(metrics);
+  if (!facts.length) return facts;
+  const stop = Number(metrics?.stopMs);
+  const paste = Number(metrics?.pasteMs);
+  const elapsed = Number(metrics?.elapsedMs);
+  let response = '';
+  if (Number.isFinite(stop) && Number.isFinite(paste)) response = formatDuration(paste - stop);
+  else if (Number.isFinite(stop) && Number.isFinite(elapsed)) response = formatDuration(elapsed - stop);
+  else if (Number.isFinite(elapsed)) response = formatDuration(elapsed);
+  if (response) facts.push(['Response', response]);
+  const audio = Number(metrics?.audioSeconds);
+  if (Number.isFinite(audio)) facts.push(['Audio', `${audio.toFixed(1)} s`]);
+  return facts;
+}
 function renderCosts(costs) {
   const activity = costs?.source === 'activity';
   const locallyRecorded = (costs?.voiceCount || 0) + (costs?.cleanupCount || 0) > 0;
@@ -147,7 +201,7 @@ function renderCosts(costs) {
     }
   }
   const note = document.createElement('span'); note.className = 'cost-popover-note';
-  note.textContent = "The last imported 30 completed days, plus costs recorded here today.";
+  note.textContent = "The last imported 30 completed days, plus costs recorded here today. Direct xAI estimates are always included in full.";
   fragment.append(note);
   popover.replaceChildren(fragment);
 }
@@ -168,13 +222,24 @@ $('refresh-balance').onclick = async () => {
   finally { $('refresh-balance').disabled = false; }
 };
 function renderSettings(settings) {
+  currentSettings = settings;
   $('key-status').textContent = settings.hasKey ? 'Saved securely' : 'Not connected';
+  $('xai-key-status').textContent = settings.hasXaiKey ? 'Saved securely' : 'Not connected';
   $('live-chunks').checked = !!settings.liveChunks;
   $('lock-mode').checked = settings.lockMode !== false;
   $('transcription-model').value = settings.transcriptionModel || 'mai-transcribe-2-clean';
   $('cleanup-mode').value = settings.cleanupMode || 'off';
   $('dictionary-terms').value = Array.isArray(settings.dictionaryTerms) ? settings.dictionaryTerms.join('\n') : '';
+  updateStreamingSettings();
 }
+function updateStreamingSettings() {
+  const streaming = $('transcription-model').value === 'grok-voice-transcribe-2-streaming';
+  $('live-chunks').disabled = streaming;
+  $('live-chunks-note').textContent = streaming
+    ? 'Grok streams microphone audio continuously, so this separate pause-chunk option does not apply.'
+    : 'Experimental. Chunks may change punctuation or lose context. Cancel stops pending work; it cannot undo audio already uploaded.';
+}
+$('transcription-model').onchange = updateStreamingSettings;
 $('lock-mode').onchange = async () => {
   const checkbox = $('lock-mode'); const nextValue = checkbox.checked; checkbox.disabled = true;
   try {
@@ -208,12 +273,13 @@ $('settings-form').onsubmit = async event => {
   event.preventDefault(); const button = event.submitter; button.disabled = true;
   try {
     const dictionaryTerms = $('dictionary-terms').value.split(/\r?\n/).map(term => term.trim()).filter(Boolean);
-    const settings = await call('saveSettings', { apiKey: $('api-key').value, liveChunks: $('live-chunks').checked, lockMode: $('lock-mode').checked, transcriptionModel: $('transcription-model').value, cleanupMode: $('cleanup-mode').value, dictionaryTerms });
-    $('api-key').value = '';
+    const settings = await call('saveSettings', { apiKey: $('api-key').value, xaiApiKey: $('xai-api-key').value, liveChunks: $('live-chunks').checked, lockMode: $('lock-mode').checked, transcriptionModel: $('transcription-model').value, cleanupMode: $('cleanup-mode').value, dictionaryTerms });
+    $('api-key').value = ''; $('xai-api-key').value = '';
     renderSettings(settings); $('save-message').textContent = 'Settings saved';
   } catch (error) { toast(error.message); } finally { button.disabled = false; }
 };
 async function openPerformance(id) {
+  closeComparison();
   selectedId = id; $('include-recording').checked = false;
   const entry = history.find(item => item.id === id);
   $('original-transcript').hidden = typeof entry?.rawText !== 'string' || entry.rawText === entry.text;
@@ -222,9 +288,11 @@ async function openPerformance(id) {
   $('performance-drawer').hidden = false; $('drawer-backdrop').hidden = false;
   await renderPerformance(); $('close-drawer').focus();
 }
-function closeDrawer() { selectedId = null; $('performance-drawer').hidden = true; $('drawer-backdrop').hidden = true; }
-$('close-drawer').onclick = closeDrawer; $('drawer-backdrop').onclick = closeDrawer;
-document.addEventListener('keydown', event => { if (event.key === 'Escape') closeDrawer(); });
+function closePerformance() { selectedId = null; $('performance-drawer').hidden = true; if ($('comparison-drawer').hidden) $('drawer-backdrop').hidden = true; }
+function closeComparison() { comparisonId = null; $('comparison-drawer').hidden = true; if ($('performance-drawer').hidden) $('drawer-backdrop').hidden = true; }
+function closeDrawers() { closePerformance(); closeComparison(); }
+$('close-drawer').onclick = closePerformance; $('close-comparison').onclick = closeComparison; $('drawer-backdrop').onclick = closeDrawers;
+document.addEventListener('keydown', event => { if (event.key === 'Escape') closeDrawers(); });
 $('include-recording').onchange = renderPerformance;
 $('export-timings').onclick = () => call('exportTimings', { id: selectedId }).catch(error => toast(error.message));
 function formatDuration(ms) { return ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${Math.round(ms)} ms`; }
@@ -249,17 +317,66 @@ async function renderPerformance() {  const id = selectedId;
     $('timings').replaceChildren(fragment);
     $('timing-note').textContent = $('include-recording').checked ? 'Full session, including time spent speaking and clipboard cleanup.' : `Recording time and clipboard cleanup are excluded.${chart.completedEarly ? ` ${chart.completedEarly} stages finished before Stop.` : ''}`;
     const facts = [['Audio length', `${metrics.audioSeconds.toFixed(1)} s`], ['Request size', `${(metrics.requestBytes / 1024).toFixed(0)} KB`], ['Longest UI gap', `${metrics.maxUiGapMs.toFixed(0)} ms`]];
+    facts.unshift(...pipelineFacts(metrics));
     for (const hedge of metrics.hedges ?? []) {
       facts.push(['Hedge fired', `after ${formatDuration(hedge.cutoffMs)}`]);
       if (hedge.savedMs != null) facts.push(['Hedge saved', `≈ ${formatDuration(hedge.savedMs)} — attempt ${hedge.winnerAttempt} answered in ${formatDuration(hedge.winnerMs)}, the other took ${formatDuration(hedge.loserMs)}`]);
       else facts.push(['Hedge winner', `attempt ${hedge.winnerAttempt} answered in ${formatDuration(hedge.winnerMs)} — the other ran ${formatDuration(hedge.loserMs ?? hedge.cutoffMs)} with no response`]);
     }
+    for (const fallback of metrics.fallbacks ?? []) facts.push(['Fallback from', `${modelNames[fallback.model] || fallback.model}: ${fallback.error}`]);
     $('timing-facts').replaceChildren(...facts.map(([name, text]) => { const item = document.createElement('div'); item.textContent = name; const value = document.createElement('strong'); value.textContent = text; item.append(value); return item; }));
   } catch (error) { toast(error.message); }
 }
+function versionButton(label, actionName, handler) {
+  const button = document.createElement('button'); button.className = 'secondary-button'; button.textContent = label;
+  button.dataset.action = actionName; button.onclick = handler; return button;
+}
+function renderComparison() {
+  const entry = history.find(item => item.id === comparisonId);
+  if (!entry) { closeComparison(); return; }
+  const versions = [{ id: null, text: entry.text, metrics: entry.metrics, primary: true }, ...(entry.alternatives || [])];
+  const fragment = document.createDocumentFragment();
+  for (const version of versions) {
+    const card = document.createElement('article'); card.className = 'transcript-version';
+    if (version.id) card.dataset.alternateId = version.id;
+    const header = document.createElement('div'); header.className = 'version-header';
+    const name = document.createElement('strong'); name.textContent = pipelineFacts(version.metrics)[0]?.[1] || 'Unknown model';
+    const badge = document.createElement('span'); badge.textContent = version.primary ? 'Primary' : 'Alternate'; header.append(name, badge);
+    const body = document.createElement('p'); body.className = 'transcript-text'; body.textContent = version.text;
+    const actions = document.createElement('div'); actions.className = 'version-actions';
+    actions.append(versionButton('Copy', 'copy', () => call('copyTranscriptVersion', { id: entry.id, alternateId: version.id }).then(() => toast('Transcript copied')).catch(error => toast(error.message))));
+    if (!version.primary) actions.append(versionButton('Make primary', 'make-primary', async () => {
+      try { await call('makeTranscriptPrimary', { id: entry.id, alternateId: version.id }); toast('Primary transcript changed'); }
+      catch (error) { toast(error.message); }
+    }));
+    card.append(header, body, actions); fragment.append(card);
+  }
+  $('comparison-versions').replaceChildren(fragment);
+  const primaryModel = entry.metrics?.transcriptionModel;
+  const dictionary = Array.isArray(currentSettings.dictionaryTerms) ? currentSettings.dictionaryTerms : [];
+  const grokDictionaryCompatible = dictionary.length <= 100 && dictionary.every(term => term.length <= 50);
+  for (const option of $('alternate-model').options) {
+    const grok = option.value === 'grok-voice-transcribe-2-streaming';
+    option.disabled = option.value === primaryModel || (grok ? !currentSettings.hasXaiKey || !grokDictionaryCompatible : !currentSettings.hasKey);
+  }
+  if ($('alternate-model').selectedOptions[0]?.disabled) $('alternate-model').value = [...$('alternate-model').options].find(option => !option.disabled)?.value || '';
+  $('create-alternate').disabled = !$('alternate-model').value;
+}
+function openComparison(id) {
+  closePerformance(); comparisonId = id; $('comparison-drawer').hidden = false; $('drawer-backdrop').hidden = false;
+  renderComparison(); $('close-comparison').focus();
+}
+$('create-alternate').onclick = async () => {
+  const button = $('create-alternate'); const id = comparisonId; const model = $('alternate-model').value;
+  if (!id || !model) return;
+  button.disabled = true; button.textContent = 'Transcribing…';
+  try { await call('transcribeAlternate', { id, model }); renderComparison(); toast('Alternate transcript added'); }
+  catch (error) { toast(error.message); }
+  finally { button.textContent = 'Transcribe'; if (comparisonId) renderComparison(); }
+};
 window.whisper.onEvent(event => {
   if (event.type === 'transcript') { history.unshift(event.entry); renderHistory(); }
-  if (event.type === 'history') { history = event.history; renderHistory(); if (selectedId && !history.some(entry => entry.id === selectedId)) closeDrawer(); }
+  if (event.type === 'history') { history = event.history; renderHistory(); if (selectedId && !history.some(entry => entry.id === selectedId)) closePerformance(); if (comparisonId) renderComparison(); }
   if (event.type === 'metricsUpdated') { const entry = history.find(x => x.id === event.id); if (entry) entry.metrics = event.metrics; if (event.id === selectedId) renderPerformance(); }
   if (event.type === 'stats') { renderWordStats(event.stats); renderCosts(event.costs); }
   if (event.type === 'balance') renderBalance(event.balance);

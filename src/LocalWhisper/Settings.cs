@@ -7,6 +7,7 @@ internal static class Settings
 {
     private static readonly string Folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalWhisper");
     private static readonly string KeyFile = Path.Combine(Folder, "key.bin");
+    private static readonly string XaiKeyFile = Path.Combine(Folder, "xai-key.bin");
     private static readonly string DictionaryFile = Path.Combine(Folder, "dictionary.bin");
     public static string[] LoadDictionaryTerms() => Vocabulary.Load(DictionaryFile);
     public static void SaveDictionaryTerms(string[] terms) => Vocabulary.Save(DictionaryFile, terms);
@@ -61,10 +62,20 @@ internal static class Settings
         return Environment.GetEnvironmentVariable("OPENROUTER_API_KEY") ?? "";
     }
     public static void SaveKey(string key)
+        => SaveProtected(KeyFile, key);
+    public static string LoadXaiKey()
+    {
+        if (File.Exists(XaiKeyFile)) return LoadProtected(XaiKeyFile);
+        return Environment.GetEnvironmentVariable("XAI_API_KEY") ?? "";
+    }
+    public static void SaveXaiKey(string key) => SaveProtected(XaiKeyFile, key);
+    private static string LoadProtected(string path) =>
+        Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(path), null, DataProtectionScope.CurrentUser));
+    private static void SaveProtected(string path, string key)
     {
         Directory.CreateDirectory(Folder);
         var encrypted = ProtectedData.Protect(Encoding.UTF8.GetBytes(key), null, DataProtectionScope.CurrentUser);
-        File.WriteAllBytes(KeyFile + ".tmp", encrypted);
-        File.Move(KeyFile + ".tmp", KeyFile, true);
+        File.WriteAllBytes(path + ".tmp", encrypted);
+        File.Move(path + ".tmp", path, true);
     }
 }

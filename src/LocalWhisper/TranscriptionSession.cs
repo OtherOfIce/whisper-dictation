@@ -2,8 +2,20 @@ using NAudio.Wave;
 
 namespace LocalWhisper;
 
+internal interface ITranscriptionSession
+{
+    int Completed { get; }
+    int Failed { get; }
+    string? LastError { get; }
+    Exception? Failure { get; }
+    int Count { get; }
+    void EnqueuePcm(byte[] pcm);
+    Task<string> FinishAsync();
+}
+
 internal sealed class TranscriptionSession(HttpClient http, string key, SessionMetrics metrics, CancellationToken token,
     IReadOnlyList<string>? dictionaryTerms = null, string transcriptionModel = TranscriptionModels.MaiClean)
+    : ITranscriptionSession
 {
     private readonly string[] dictionary = dictionaryTerms?.ToArray() ?? [];
     private readonly List<Task<string>> chunks = [];
@@ -11,9 +23,11 @@ internal sealed class TranscriptionSession(HttpClient http, string key, SessionM
     private readonly object gate = new();
     private int completed, failed;
     private string? lastError;
+    private Exception? failure;
     public int Completed => Volatile.Read(ref completed);
     public int Failed => Volatile.Read(ref failed);
     public string? LastError { get { lock (gate) return lastError; } }
+    public Exception? Failure { get { lock (gate) return failure; } }
     public int Count { get { lock (gate) return chunks.Count; } }
     public void EnqueuePcm(byte[] pcm)
     {
@@ -53,7 +67,7 @@ internal sealed class TranscriptionSession(HttpClient http, string key, SessionM
                         // TranscribeAsync already retried transient errors. Keep the
                         // successful chunks instead of throwing the whole recording away.
                         Interlocked.Increment(ref failed);
-                        lock (gate) lastError = ex.Message;
+                        lock (gate) { lastError = ex.Message; failure = ex; }
                         return "";
                     }
                 }
@@ -72,7 +86,10 @@ internal sealed class TranscriptionSession(HttpClient http, string key, SessionM
         token.ThrowIfCancellationRequested();
         var text = string.Join(" ", results.Where(t => !string.IsNullOrWhiteSpace(t)));
         if (text.Length == 0 && Volatile.Read(ref failed) > 0)
+        {
+            if (Failure is { } error) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
             throw new HttpRequestException(LastError ?? "Transcription failed. Try again.");
+        }
         return text;
     }
 }
