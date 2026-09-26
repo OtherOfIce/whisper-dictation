@@ -5,10 +5,13 @@ namespace LocalWhisper;
 public sealed record TimingRow(string Name, double StartMs, double DurationMs, bool Running);
 public sealed record CostRow(string Category, string Model, decimal Amount);
 public sealed record HedgeEvent(double CutoffMs, int WinnerAttempt, double WinnerMs, double? LoserMs, double? SavedMs);
+public sealed record ParallelRequestEvent(string RaceId, int Attempt, string Model, double DurationMs, string Outcome, bool Selected);
+public sealed record RequestEvent(string Model, double DurationMs, string Outcome);
 public sealed record FallbackEvent(string Model, string Error);
 public sealed record MetricsSnapshot(DateTime Started, string Outcome, double AudioSeconds, long AudioBytes, long RequestBytes,
     double ElapsedMs, double? StopMs, double? PasteMs, double MaxUiGapMs, TimingRow[] Rows, CostRow[] Costs, HedgeEvent[] Hedges,
-    string TranscriptionModel, string CleanupMode, string RequestedTranscriptionModel, FallbackEvent[] Fallbacks);
+    string TranscriptionModel, string CleanupMode, string RequestedTranscriptionModel, FallbackEvent[] Fallbacks,
+    ParallelRequestEvent[] ParallelRequests, RequestEvent[] Requests);
 
 public sealed class SessionMetrics
 {
@@ -18,6 +21,9 @@ public sealed class SessionMetrics
     private readonly List<CostRow> costs = [];
     private readonly List<HedgeEvent> hedges = [];
     private readonly List<FallbackEvent> fallbacks = [];
+    private readonly List<ParallelRequestEvent> parallelRequests = [];
+    private readonly List<RequestEvent> requests = [];
+    private readonly List<Task> background = [];
     private readonly DateTime started = DateTime.Now;
     private double? stopMs, pasteMs;
     private double audioSeconds, maxUiGap;
@@ -48,6 +54,23 @@ public sealed class SessionMetrics
         lock (gate) hedges.Add(new(cutoffMs, winnerAttempt, winnerMs, loserMs, savedMs));
     }
     public void Fallback(string model, string error) { lock (gate) fallbacks.Add(new(model, error)); }
+    public void ParallelRequest(ParallelRequestEvent request) { lock (gate) parallelRequests.Add(request); }
+    public void Request(string model, double durationMs, string outcome) { lock (gate) requests.Add(new(model, durationMs, outcome)); }
+    public void SelectParallelRequest(string raceId, int attempt)
+    {
+        lock (gate)
+        {
+            var index = parallelRequests.FindIndex(request => request.RaceId == raceId && request.Attempt == attempt);
+            if (index >= 0) parallelRequests[index] = parallelRequests[index] with { Selected = true };
+        }
+    }
+    public void TrackBackground(Task task) { lock (gate) background.Add(task); }
+    public async Task WaitForBackgroundAsync()
+    {
+        Task[] pending;
+        lock (gate) pending = background.ToArray();
+        await Task.WhenAll(pending).ConfigureAwait(false);
+    }
     public void Pasted() { lock (gate) pasteMs = ElapsedMs; }
     public void UiGap(double ms) { lock (gate) maxUiGap = Math.Max(maxUiGap, ms); }
     public void Complete(string result) { lock (gate) { outcome = result; finishedMs = ElapsedMs; } }
@@ -56,7 +79,7 @@ public sealed class SessionMetrics
         lock (gate) return new(started, outcome, audioSeconds, audioBytes, requestBytes,
             Math.Max(finishedMs ?? ElapsedMs, stages.Count == 0 ? 0 : stages.Max(s => s.End ?? ElapsedMs)), stopMs, pasteMs, maxUiGap,
             stages.Select(s => new TimingRow(s.Name, s.Start, (s.End ?? ElapsedMs) - s.Start, s.End is null)).ToArray(), costs.ToArray(), hedges.ToArray(),
-            TranscriptionModel, CleanupMode, RequestedTranscriptionModel, fallbacks.ToArray());
+            TranscriptionModel, CleanupMode, RequestedTranscriptionModel, fallbacks.ToArray(), parallelRequests.ToArray(), requests.ToArray());
     }
     private sealed class Stage(SessionMetrics owner, string name, double start) : IDisposable
     {

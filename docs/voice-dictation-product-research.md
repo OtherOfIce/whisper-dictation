@@ -2,6 +2,8 @@
 
 Research date: 2026-09-15. Sources are first-party product pages, help documents, policies, and official repositories. Marketing accuracy claims are recorded as vendor claims, not independent findings.
 
+The review-before-save recommendation in this research has been superseded. The current [correction learning plan](correction-learning-plan.md) saves qualifying terms by default and offers Undo in a Windows notification.
+
 ## Short answer
 
 The useful ideas are not more aggressive prose cleanup. Local Whisper already has the hard core of the product: system-wide capture, provider choice, dictionary hints, optional conservative cleanup, searchable local history, saved recordings, and performance evidence.

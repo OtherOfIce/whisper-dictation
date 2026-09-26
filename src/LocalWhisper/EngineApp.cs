@@ -25,7 +25,7 @@ internal sealed class EngineApp : ApplicationContext
     private string? processingPhase;
     private string[] dictionaryTerms = [];
     private nint target;
-    private bool liveChunks, lockMode = true, cancelled, exiting;
+    private bool liveChunks, doubleTranscription, lockMode = true, cancelled, exiting;
     private long lastTick = Environment.TickCount64, lastPublish;
 
     public EngineApp(bool noHook = false)
@@ -41,7 +41,7 @@ internal sealed class EngineApp : ApplicationContext
         });
         try { Settings.RemoveLegacyBalanceKey(); }
         catch { Notify("The old saved management key could not be removed. Delete balance-key.bin from LocalWhisper's local app data folder."); }
-        try { apiKey = Settings.LoadKey(); xaiApiKey = Settings.LoadXaiKey(); liveChunks = Settings.LiveChunks; lockMode = Settings.LockMode; cleanupMode = Settings.CleanupMode; transcriptionModel = Settings.TranscriptionModel; dictionaryTerms = Settings.LoadDictionaryTerms(); }
+        try { apiKey = Settings.LoadKey(); xaiApiKey = Settings.LoadXaiKey(); liveChunks = Settings.LiveChunks; doubleTranscription = Settings.DoubleTranscription; lockMode = Settings.LockMode; cleanupMode = Settings.CleanupMode; transcriptionModel = Settings.TranscriptionModel; dictionaryTerms = Settings.LoadDictionaryTerms(); }
         catch { Notify("Saved settings could not be read. Please open Settings."); }
         gesture = new Gesture(lockMode);
         if (!noHook)
@@ -83,7 +83,7 @@ internal sealed class EngineApp : ApplicationContext
             if (!exiting) dispatcher.BeginInvoke(ExitThread);
         });
     }
-    private object SettingsState() => new { hasKey = !string.IsNullOrWhiteSpace(apiKey), hasXaiKey = !string.IsNullOrWhiteSpace(xaiApiKey), liveChunks, lockMode, cleanupMode, transcriptionModel, dictionaryTerms };
+    private object SettingsState() => new { hasKey = !string.IsNullOrWhiteSpace(apiKey), hasXaiKey = !string.IsNullOrWhiteSpace(xaiApiKey), liveChunks, doubleTranscription, lockMode, cleanupMode, transcriptionModel, dictionaryTerms };
     private void Emit(object value) => output.Writer.TryWrite(value);
     private void Notify(string message) => Emit(new { type = "notice", message });
     private void PublishState() => Emit(new { type = "state", mode = cancelled || metrics?.Snapshot().PasteMs is not null ? "Idle" : gesture.Mode.ToString(), phase = processingPhase, level = recorder?.Level ?? 0, id = entryId, metrics = metrics?.Snapshot() });
@@ -122,6 +122,7 @@ internal sealed class EngineApp : ApplicationContext
                     if (values.TryGetProperty("apiKey", out var key) && !string.IsNullOrWhiteSpace(key.GetString())) { Settings.SaveKey(key.GetString()!.Trim()); apiKey = Settings.LoadKey(); }
                     if (values.TryGetProperty("xaiApiKey", out var xaiKey) && !string.IsNullOrWhiteSpace(xaiKey.GetString())) { Settings.SaveXaiKey(xaiKey.GetString()!.Trim()); xaiApiKey = Settings.LoadXaiKey(); }
                     if (values.TryGetProperty("liveChunks", out var live)) { liveChunks = live.GetBoolean(); Settings.SaveLiveChunks(liveChunks); }
+                    if (values.TryGetProperty("doubleTranscription", out var doubled)) { doubleTranscription = doubled.GetBoolean(); Settings.SaveDoubleTranscription(doubleTranscription); }
                     if (values.TryGetProperty("lockMode", out var lockSetting)) { lockMode = lockSetting.GetBoolean(); Settings.SaveLockMode(lockMode); gesture.LockByDefault = lockMode; }
                     if (values.TryGetProperty("cleanupMode", out var cleanup)) { Settings.SaveCleanupMode(cleanup.GetString() ?? ""); cleanupMode = Settings.CleanupMode; }
                     if (values.TryGetProperty("transcriptionModel", out var model)) { Settings.SaveTranscriptionModel(model.GetString() ?? ""); transcriptionModel = Settings.TranscriptionModel; }
@@ -161,24 +162,26 @@ internal sealed class EngineApp : ApplicationContext
         if (action == GestureAction.Start)
         {
             var grokStreaming = TranscriptionModels.IsStreaming(transcriptionModel);
+            var effectiveCleanup = cleanupMode;
             if ((grokStreaming && string.IsNullOrWhiteSpace(xaiApiKey))
                 || (!grokStreaming && string.IsNullOrWhiteSpace(apiKey))
-                || (cleanupMode != CleanupService.Off && string.IsNullOrWhiteSpace(apiKey)))
+                || (effectiveCleanup != CleanupService.Off && string.IsNullOrWhiteSpace(apiKey)))
             { gesture.Reset(); Emit(new { type = "needsSettings" }); return; }
             target = Native.GetForegroundWindow(); cancelled = false; processingPhase = null;
             metrics = new SessionMetrics(); entryId = Guid.NewGuid().ToString("N");
-            metrics.TranscriptionModel = transcriptionModel; metrics.RequestedTranscriptionModel = transcriptionModel; metrics.CleanupMode = cleanupMode;
+            metrics.TranscriptionModel = transcriptionModel; metrics.RequestedTranscriptionModel = transcriptionModel; metrics.CleanupMode = effectiveCleanup;
             operation = new CancellationTokenSource();
-            insertionContext = cleanupMode == CleanupService.Off ? null : TargetContext.CaptureAsync(target, operation.Token);
+            insertionContext = effectiveCleanup == CleanupService.Off ? null : TargetContext.CaptureAsync(target, operation.Token);
             recordingStage = metrics.Measure("Recording"); lastTick = Environment.TickCount64;
             try
             {
                 session = grokStreaming
                     ? new XaiStreamingSession(xaiApiKey, metrics, operation.Token, dictionaryTerms)
-                    : new TranscriptionSession(http, apiKey, metrics, operation.Token, dictionaryTerms, transcriptionModel);
-                var recorderMode = grokStreaming ? RecorderMode.Stream : liveChunks ? RecorderMode.AtPauses : RecorderMode.AtStop;
+                    : new TranscriptionSession(http, apiKey, metrics, operation.Token, dictionaryTerms, transcriptionModel, doubleTranscription);
+                var recorderMode = grokStreaming ? RecorderMode.Stream
+                    : liveChunks ? RecorderMode.AtPauses : RecorderMode.AtStop;
                 recorder = new Recorder(recorderMode);
-                recorder.ChunkReady += session.EnqueuePcm;
+                if (session is not null) recorder.ChunkReady += session.EnqueuePcm;
                 using (metrics.Measure("Open microphone")) recorder.Start();
             }
             catch (Exception ex)
@@ -216,31 +219,33 @@ internal sealed class EngineApp : ApplicationContext
             });
             cancellation.Token.ThrowIfCancellationRequested();
             if (audio is null || audio.Length < 6444) { cancellation.Cancel(); outcome = "Too short"; return; }
-            active.EnqueuePcm(pcm);
-            Exception? primaryFailure = null;
-            try { rawText = await active.FinishAsync(); }
-            catch (Exception ex) when (ModelTranscription.CanFallback(ex, cancellation.Token)) { primaryFailure = ex; }
-            if (string.IsNullOrWhiteSpace(rawText) && primaryFailure is null)
-                primaryFailure = new InvalidDataException("The selected model returned no transcript.");
-            if (active.Failed > 0 || primaryFailure is not null)
             {
-                var partialText = rawText;
-                trace.Fallback(transcriptionModel, primaryFailure?.Message ?? active.LastError ?? "Part of the recording could not be transcribed.");
-                try
+                active.EnqueuePcm(pcm);
+                Exception? primaryFailure = null;
+                try { rawText = await active.FinishAsync(); }
+                catch (Exception ex) when (ModelTranscription.CanFallback(ex, cancellation.Token)) { primaryFailure = ex; }
+                if (string.IsNullOrWhiteSpace(rawText) && primaryFailure is null)
+                    primaryFailure = new InvalidDataException("The selected model returned no transcript.");
+                if (active.Failed > 0 || primaryFailure is not null)
                 {
-                    var encoded = EncodeAudio(audio, trace, "Fallback · ");
-                    var fallback = await CreateModelTranscription(trace, dictionaryTerms).TranscribeWithFallbackAsync(
-                        encoded.Bytes, encoded.Format, transcriptionModel, dictionaryTerms, trace, cancellation.Token,
-                        skipRequested: !TranscriptionModels.IsStreaming(transcriptionModel)).ConfigureAwait(false);
-                    rawText = fallback.Text;
-                    if (fallback.UsedModel != transcriptionModel)
-                        Notify($"{ModelLabel(transcriptionModel)} failed. {ModelLabel(fallback.UsedModel)} produced the transcript instead.");
-                }
-                catch when (!string.IsNullOrWhiteSpace(partialText))
-                {
-                    rawText = partialText;
-                    KeepFailedAudio(id, audio, transcriptionModel, dictionaryTerms);
-                    Notify("Every fallback model failed. The partial transcript and full recording were kept in History.");
+                    var partialText = rawText;
+                    trace.Fallback(transcriptionModel, primaryFailure?.Message ?? active.LastError ?? "Part of the recording could not be transcribed.");
+                    try
+                    {
+                        var encoded = EncodeAudio(audio, trace, "Fallback · ");
+                        var fallback = await CreateModelTranscription(trace, dictionaryTerms).TranscribeWithFallbackAsync(
+                            encoded.Bytes, encoded.Format, transcriptionModel, dictionaryTerms, trace, cancellation.Token,
+                            skipRequested: !TranscriptionModels.IsStreaming(transcriptionModel)).ConfigureAwait(false);
+                        rawText = fallback.Text;
+                        if (fallback.UsedModel != transcriptionModel)
+                            Notify($"{ModelLabel(transcriptionModel)} failed. {ModelLabel(fallback.UsedModel)} produced the transcript instead.");
+                    }
+                    catch when (!string.IsNullOrWhiteSpace(partialText))
+                    {
+                        rawText = partialText;
+                        KeepFailedAudio(id, audio, transcriptionModel, dictionaryTerms);
+                        Notify("Every fallback model failed. The partial transcript and full recording were kept in History.");
+                    }
                 }
             }
             text = rawText;
@@ -295,8 +300,11 @@ internal sealed class EngineApp : ApplicationContext
         {
             if (TranscriptionModels.IsStreaming(model))
                 return await new XaiBatchTranscriber(http).TranscribeAsync(audio, format, xaiApiKey, terms, trace, token).ConfigureAwait(false);
-            return await new Transcriber(http).TranscribeAsync(audio, apiKey, token, trace,
-                $"Fallback {ModelLabel(model)} · ", format, terms, model).ConfigureAwait(false);
+            var encoded = string.Equals(format, "wav", StringComparison.OrdinalIgnoreCase) && audio.Length >= 20 * 32000
+                ? EncodeAudio(audio, trace, "Fallback · ")
+                : (Bytes: audio, Format: format);
+            return await new Transcriber(http).TranscribeAsync(encoded.Bytes, apiKey, token, trace,
+                $"Fallback {ModelLabel(model)} · ", encoded.Format, terms, model).ConfigureAwait(false);
         }, model => TranscriptionModels.IsStreaming(model)
             ? !string.IsNullOrWhiteSpace(xaiApiKey) && grokDictionaryCompatible
             : !string.IsNullOrWhiteSpace(apiKey));
@@ -389,7 +397,7 @@ internal sealed class EngineApp : ApplicationContext
     }
     private async Task UpdateCompletedMetricsAsync(string id, SessionMetrics trace)
     {
-        await Task.Delay(850);
+        await Task.WhenAll(Task.Delay(850), trace.WaitForBackgroundAsync());
         if (!exiting) Emit(new { type = "metricsUpdated", id, metrics = trace.Snapshot() });
     }
     private void Cancel()

@@ -20,6 +20,9 @@ internal static class Settings
     private static readonly string LiveFile = Path.Combine(Folder, "live-chunks.txt");
     public static bool LiveChunks => File.Exists(LiveFile) && File.ReadAllText(LiveFile).Trim() == "true";
     public static void SaveLiveChunks(bool enabled) { Directory.CreateDirectory(Folder); File.WriteAllText(LiveFile, enabled ? "true" : "false"); }
+    private static readonly string DoubleFile = Path.Combine(Folder, "double-transcription.txt");
+    public static bool DoubleTranscription => !File.Exists(DoubleFile) || File.ReadAllText(DoubleFile).Trim() == "true";
+    public static void SaveDoubleTranscription(bool enabled) { Directory.CreateDirectory(Folder); File.WriteAllText(DoubleFile, enabled ? "true" : "false"); }
     private static readonly string LockModeFile = Path.Combine(Folder, "lock-mode.txt");
     public static bool LockMode => !File.Exists(LockModeFile) || File.ReadAllText(LockModeFile).Trim() == "true";
     public static void SaveLockMode(bool enabled) { Directory.CreateDirectory(Folder); File.WriteAllText(LockModeFile, enabled ? "true" : "false"); }

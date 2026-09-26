@@ -14,6 +14,8 @@ internal static class Program
         try
         {
             if (args.Contains("--benchmark")) { Benchmark().GetAwaiter().GetResult(); return; }
+            if (args.Contains("--mai-pause-benchmark")) { MaiPauseBenchmark.RunAsync().GetAwaiter().GetResult(); return; }
+            if (args.Contains("--mai-dual-benchmark")) { MaiDualBenchmark.RunAsync(args).GetAwaiter().GetResult(); return; }
             if (args.Contains("--credits"))
             {
                 using var http = new HttpClient();
@@ -23,6 +25,7 @@ internal static class Program
             }
             Gestures();
             Api().GetAwaiter().GetResult();
+            ParallelChecks().GetAwaiter().GetResult();
             Fallback().GetAwaiter().GetResult();
             XaiContract().GetAwaiter().GetResult();
             CleanupChecks.RunAsync(Check).GetAwaiter().GetResult();
@@ -58,7 +61,7 @@ internal static class Program
             {
                 "/api/v1/key" => "{\"data\":{\"label\":\"sk-or-v1-abc...xyz\",\"usage\":0.5}}",
                 "/api/v1/keys" => "{\"data\":[{\"label\":\"sk-or-v1-abc...xyz\",\"hash\":\"key-hash\"}]}",
-                "/api/v1/activity" => "{\"data\":[{\"date\":\"2026-09-15\",\"model\":\"microsoft/mai-transcribe-2\",\"provider_name\":\"Azure\",\"endpoint_id\":\"ep-1\",\"requests\":4,\"usage\":0.012},{\"date\":\"2026-09-15\",\"model\":\"openai/gpt-5.6-luna\",\"provider_name\":\"OpenAI\",\"endpoint_id\":\"ep-2\",\"requests\":2,\"usage\":0.003},{\"date\":\"2026-09-15\",\"model\":\"other/model\",\"usage\":4}]}",
+                "/api/v1/activity" => "{\"data\":[{\"date\":\"2026-09-15\",\"model\":\"microsoft/mai-transcribe-2\",\"provider_name\":\"Azure\",\"endpoint_id\":\"ep-1\",\"requests\":4,\"usage\":0.012},{\"date\":\"2026-09-15\",\"model\":\"openai/gpt-6-luna\",\"provider_name\":\"OpenAI\",\"endpoint_id\":\"ep-2\",\"requests\":2,\"usage\":0.003},{\"date\":\"2026-09-15\",\"model\":\"google/gemini-3.8-flash\",\"provider_name\":\"Google\",\"endpoint_id\":\"ep-3\",\"requests\":1,\"usage\":0.002},{\"date\":\"2026-09-15\",\"model\":\"other/model\",\"usage\":4}]}",
                 _ => throw new Exception($"Unexpected credit endpoint: {path}")
             };
             Check(request.Headers.Authorization?.Parameter == (path == "/api/v1/key" ? "inference-key" : "management-key"), "Activity import uses each key only for its intended endpoint");
@@ -66,7 +69,7 @@ internal static class Program
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(content) });
         }));
         var activity = await new Credits(activityHttp).ImportActivityAsync("inference-key", "management-key");
-        Check(activity.Rows is [{ Category: "voice", Model: Transcriber.MaiModel, Amount: 0.012m, Requests: 4 }, { Category: "cleanup", Model: CleanupService.Model, Amount: 0.003m, Requests: 2 }], "Activity imports the dictation key's voice and Luna costs");
+        Check(activity.Rows is [{ Category: "voice", Model: Transcriber.MaiModel, Amount: 0.012m, Requests: 4 }, { Category: "cleanup", Model: CleanupService.Model, Amount: 0.003m, Requests: 2 }, { Category: "voice", Model: "google/gemini-3.8-flash", Amount: 0.002m, Requests: 1 }], "Activity preserves historical voice and Luna costs");
         Check(activity.Rows[0].Provider == "Azure" && activity.Rows[0].Endpoint == "ep-1", "Activity keeps the provider endpoint breakdown");
         Check(activity.Through == DateTime.UtcNow.Date.AddDays(-1), "Activity stops at the last completed UTC day");
     }
@@ -358,16 +361,18 @@ internal static class Program
         var attempts = 0;
         using var stalled = new HttpClient(new Handler(async (_, token) =>
         {
-            if (Interlocked.Increment(ref attempts) == 1) await Task.Delay(TimeSpan.FromSeconds(30), token);
+            if (Interlocked.Increment(ref attempts) == 1) await Task.Delay(TimeSpan.FromMilliseconds(150), token);
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"text\":\"Hedged\"}") };
         }));
         var hedged = new Transcriber(stalled) { HedgeDelay = _ => TimeSpan.FromMilliseconds(50) };
         var hedgeMetrics = new SessionMetrics();
         Check(await hedged.TranscribeAsync([1, 2, 3], "test-only", default, hedgeMetrics) == "Hedged", "Stalled first attempt loses to hedge");
         Check(attempts == 2, "Hedge fires exactly one second request");
+        await hedgeMetrics.WaitForBackgroundAsync();
         var hedge = hedgeMetrics.Snapshot().Hedges;
-        Check(hedge is [{ WinnerAttempt: 2, SavedMs: null }], "Hedge records the cutoff, winner, and cancelled loser");
-        Check(hedge[0].CutoffMs == 50 && hedge[0].WinnerMs >= 0 && hedge[0].LoserMs >= 50, "Hedge durations cover both attempts");
+        Check(hedge is [{ WinnerAttempt: 2, SavedMs: > 0 }], "Hedge records the winner and completed loser");
+        Check(hedge[0].CutoffMs == 50 && hedge[0].WinnerMs >= 0 && hedge[0].LoserMs >= 150, "Hedge durations cover both attempts");
+        Check(hedgeMetrics.Snapshot().Requests.Length == 2, "Both hedge request durations are recorded");
         var fastCalls = 0;
         using var fast = new HttpClient(new Handler((_, _) =>
         {
@@ -377,6 +382,55 @@ internal static class Program
         Check(await new Transcriber(fast) { HedgeDelay = _ => TimeSpan.FromMilliseconds(50) }.TranscribeAsync([1], "test-only", default, apiMetrics) == "Prompt", "Fast attempt returns without hedging");
         Check(fastCalls == 1, "No second request when first is prompt");
         Check(apiMetrics.Snapshot().Hedges.Length == 0, "Prompt requests record no hedge");
+    }
+    private static async Task ParallelChecks()
+    {
+        var maiCalls = 0;
+        var gptCalls = 0;
+        using var http = new HttpClient(new Handler(async (request, token) =>
+        {
+            using var payload = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            var model = payload.RootElement.GetProperty("model").GetString();
+            if (model == Transcriber.MaiModel)
+            {
+                var number = Interlocked.Increment(ref maiCalls);
+                await Task.Delay(number == 1 ? 150 : 20, token);
+            }
+            else Interlocked.Increment(ref gptCalls);
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"text\":\"Winner\",\"usage\":{\"cost\":0.001}}") };
+        }));
+        var metrics = new SessionMetrics();
+        var transcriber = new Transcriber(http) { ParallelFallbackDelay = _ => TimeSpan.FromMilliseconds(300) };
+        Check(await transcriber.TranscribeAsync([1, 2], "test-only", default, metrics,
+            doubleTranscription: true) == "Winner", "Immediate MAI race returns the first success");
+        await metrics.WaitForBackgroundAsync();
+        var snapshot = metrics.Snapshot();
+        Check(maiCalls == 2 && gptCalls == 0, "Race starts two MAI requests without an unnecessary fallback");
+        Check(snapshot.ParallelRequests.Length == 2 && snapshot.ParallelRequests.Single(x => x.Selected).Attempt == 2
+            && snapshot.ParallelRequests.Single(x => x.Attempt == 1).DurationMs >= 140,
+            "The slower MAI request finishes and its full duration is recorded");
+        Check(snapshot.Costs.Length == 2 && snapshot.Requests.Length == 2, "Both MAI costs and request times are retained");
+
+        var slowMai = 0;
+        var fallbackCalls = 0;
+        using var fallbackHttp = new HttpClient(new Handler(async (request, token) =>
+        {
+            using var payload = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            if (payload.RootElement.GetProperty("model").GetString() == Transcriber.MaiModel)
+            { Interlocked.Increment(ref slowMai); await Task.Delay(160, token); }
+            else { Interlocked.Increment(ref fallbackCalls); await Task.Delay(10, token); }
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"text\":\"Fallback\"}") };
+        }));
+        var fallbackMetrics = new SessionMetrics();
+        Check(await new Transcriber(fallbackHttp) { ParallelFallbackDelay = _ => TimeSpan.FromMilliseconds(30) }
+            .TranscribeAsync([1], "test-only", default, fallbackMetrics, doubleTranscription: true) == "Fallback",
+            "GPT can win when both MAI requests are slow");
+        await fallbackMetrics.WaitForBackgroundAsync();
+        var fallbackSnapshot = fallbackMetrics.Snapshot();
+        Check(slowMai == 2 && fallbackCalls == 1 && fallbackSnapshot.TranscriptionModel == TranscriptionModels.Gpt,
+            "Slow double MAI triggers one GPT fallback and records the used model");
+        Check(fallbackSnapshot.ParallelRequests.Length == 3 && fallbackSnapshot.Requests.Length == 3,
+            "Fallback and both slower MAI requests retain their full timings");
     }
     private static async Task XaiContract()
     {

@@ -22,6 +22,7 @@ public sealed class Transcriber(HttpClient client)
     public const string Model = "openai/gpt-transcribe";
     public const string MaiModel = "microsoft/mai-transcribe-2";
     internal Func<double, TimeSpan> HedgeDelay = DefaultHedgeDelay;
+    internal Func<double, TimeSpan> ParallelFallbackDelay = DefaultHedgeDelay;
     internal Func<int, TimeSpan> RetryBackoff = DefaultRetryBackoff;
     internal static TimeSpan DefaultHedgeDelay(double audioSeconds) =>
         TimeSpan.FromMilliseconds(Math.Min(2500 + 50 * Math.Max(0, audioSeconds), 10000));
@@ -82,38 +83,17 @@ public sealed class Transcriber(HttpClient client)
     }
     public async Task<string> TranscribeAsync(byte[] wav, string key, CancellationToken cancellation,
         SessionMetrics? metrics = null, string prefix = "", string format = "wav", IReadOnlyList<string>? dictionaryTerms = null,
-        string transcriptionModel = TranscriptionModels.MaiClean)
+        string transcriptionModel = TranscriptionModels.MaiClean, bool doubleTranscription = false)
     {
         if (!TranscriptionModels.IsValid(transcriptionModel) || TranscriptionModels.IsStreaming(transcriptionModel))
             throw new InvalidOperationException("Invalid file transcription model.");
         var userCancellation = cancellation;
         byte[] payloadBytes;
         using (metrics?.Measure(prefix + "Prepare request"))
-        {
-            var payload = new Dictionary<string, object>
-            {
-                ["model"] = TranscriptionModels.IsMai(transcriptionModel) ? MaiModel : Model,
-                ["input_audio"] = new { data = Convert.ToBase64String(wav), format }
-            };
-            if (TranscriptionModels.IsMai(transcriptionModel))
-            {
-                var azure = new Dictionary<string, object>
-                {
-                    ["enhancedMode"] = new
-                    {
-                        modelOptions = new
-                        {
-                            transcribeStyle = transcriptionModel == TranscriptionModels.MaiClean ? "clean" : "verbatim"
-                        }
-                    }
-                };
-                if (dictionaryTerms is { Count: > 0 }) azure["phraseList"] = new { phrases = dictionaryTerms };
-                payload["provider"] = new { options = new { azure } };
-            }
-            else if (dictionaryTerms is { Count: > 0 })
-                payload["provider"] = new { options = new { openai = new { keywords = dictionaryTerms } } };
-            payloadBytes = JsonSerializer.SerializeToUtf8Bytes(payload);
-        }
+            payloadBytes = BuildPayload(wav, format, dictionaryTerms, transcriptionModel);
+        if (doubleTranscription && TranscriptionModels.IsMai(transcriptionModel))
+            return await TranscribeParallelAsync(payloadBytes, wav, format, key, dictionaryTerms, transcriptionModel,
+                metrics, prefix, userCancellation).ConfigureAwait(false);
         double? retryHintMs = null;
         for (var attempt = 0; ; attempt++)
         {
@@ -127,8 +107,6 @@ public sealed class Transcriber(HttpClient client)
                     catch (OperationCanceledException) when (userCancellation.IsCancellationRequested) { throw; }
                 }
             }
-            // Each pass gets a fresh 45s budget so one slow or throttled try cannot
-            // consume the retries meant to save a long recording.
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(userCancellation);
             timeout.CancelAfter(TimeSpan.FromSeconds(45));
             try
@@ -145,83 +123,201 @@ public sealed class Transcriber(HttpClient client)
             }
             catch (OperationCanceledException) when (!userCancellation.IsCancellationRequested && attempt < 2)
             {
-                // Per-attempt timeout or a dropped connection, not the user cancelling.
                 retryHintMs = null;
+            }
+        }
+    }
+    private static byte[] BuildPayload(byte[] audio, string format, IReadOnlyList<string>? dictionaryTerms, string transcriptionModel)
+    {
+        var payload = new Dictionary<string, object>
+        {
+            ["model"] = TranscriptionModels.IsMai(transcriptionModel) ? MaiModel : Model,
+            ["input_audio"] = new { data = Convert.ToBase64String(audio), format }
+        };
+        if (TranscriptionModels.IsMai(transcriptionModel))
+        {
+            var azure = new Dictionary<string, object>
+            {
+                ["enhancedMode"] = new { modelOptions = new { transcribeStyle = transcriptionModel == TranscriptionModels.MaiClean ? "clean" : "verbatim" } }
+            };
+            if (dictionaryTerms is { Count: > 0 }) azure["phraseList"] = new { phrases = dictionaryTerms };
+            payload["provider"] = new { options = new { azure } };
+        }
+        else if (dictionaryTerms is { Count: > 0 })
+            payload["provider"] = new { options = new { openai = new { keywords = dictionaryTerms } } };
+        return JsonSerializer.SerializeToUtf8Bytes(payload);
+    }
+    private sealed record ParallelResult(int Attempt, string Model, string? Text, Exception? Error);
+    private async Task<string> TranscribeParallelAsync(byte[] payload, byte[] audio, string format, string key,
+        IReadOnlyList<string>? dictionary, string model, SessionMetrics? metrics, string prefix, CancellationToken cancellation)
+    {
+        var raceId = Guid.NewGuid().ToString("N");
+        var sources = new List<CancellationTokenSource>();
+        var registrations = new List<CancellationTokenRegistration>();
+        var requests = new List<Task<ParallelResult>>();
+        Task<ParallelResult> Start(int number, string requestModel, byte[] bytes)
+        {
+            var source = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            sources.Add(source);
+            registrations.Add(cancellation.Register(source.Cancel));
+            var task = Run(number, requestModel, bytes, source.Token);
+            requests.Add(task);
+            return task;
+        }
+        async Task<ParallelResult> Run(int number, string requestModel, byte[] bytes, CancellationToken token)
+        {
+            var watch = Stopwatch.StartNew();
+            try
+            {
+                var (text, _) = await SendOnceAsync(bytes, key, requestModel, metrics,
+                    prefix + $"Race {number} · ", token).ConfigureAwait(false);
+                metrics?.ParallelRequest(new(raceId, number, requestModel, watch.Elapsed.TotalMilliseconds, "Completed", false));
+                return new(number, requestModel, text, null);
+            }
+            catch (Exception ex)
+            {
+                metrics?.ParallelRequest(new(raceId, number, requestModel, watch.Elapsed.TotalMilliseconds,
+                    ex is OperationCanceledException ? "Timed out or cancelled" : "Failed", false));
+                return new(number, requestModel, null, ex);
+            }
+        }
+        _ = Start(1, model, payload);
+        _ = Start(2, model, payload);
+        var pending = new List<Task<ParallelResult>>(requests);
+        var delay = ParallelFallbackDelay(EstimateAudioSeconds(audio, format));
+        Task? fallbackTimer = delay > TimeSpan.Zero ? Task.Delay(delay, cancellation) : Task.CompletedTask;
+        Exception? failure = null;
+        var detached = false;
+        try
+        {
+            while (pending.Count > 0)
+            {
+                var candidates = pending.Cast<Task>().ToList();
+                if (fallbackTimer is not null) candidates.Add(fallbackTimer);
+                var completed = await Task.WhenAny(candidates).ConfigureAwait(false);
+                cancellation.ThrowIfCancellationRequested();
+                if (completed == fallbackTimer)
+                {
+                    fallbackTimer = null;
+                    if (pending.Count == 2 && pending.All(task => !task.IsCompleted))
+                        pending.Add(Start(3, TranscriptionModels.Gpt, BuildPayload(audio, format, dictionary, TranscriptionModels.Gpt)));
+                    continue;
+                }
+                var finished = (Task<ParallelResult>)completed;
+                pending.Remove(finished);
+                var result = await finished.ConfigureAwait(false);
+                if (result.Text is { Length: > 0 } text)
+                {
+                    metrics?.SelectParallelRequest(raceId, result.Attempt);
+                    if (result.Model == TranscriptionModels.Gpt)
+                    {
+                        if (metrics is not null) metrics.TranscriptionModel = TranscriptionModels.Gpt;
+                        metrics?.Fallback(model, "Both parallel MAI requests were slow; GPT finished first.");
+                    }
+                    foreach (var registration in registrations) registration.Dispose();
+                    var remaining = Task.WhenAll(requests);
+                    var observer = remaining.ContinueWith(_ => { foreach (var source in sources) source.Dispose(); }, TaskScheduler.Default);
+                    metrics?.TrackBackground(observer);
+                    detached = true;
+                    return text;
+                }
+                failure = result.Error;
+                fallbackTimer = null; // A failed request is no longer a slow request.
+            }
+            throw failure ?? new InvalidDataException("Every parallel transcription request failed.");
+        }
+        finally
+        {
+            if (!detached)
+            {
+                foreach (var registration in registrations) registration.Dispose();
+                foreach (var source in sources) source.Cancel();
+                var observer = Task.WhenAll(requests).ContinueWith(_ => { foreach (var source in sources) source.Dispose(); }, TaskScheduler.Default);
+                metrics?.TrackBackground(observer);
             }
         }
     }
     private async Task<string> TranscribeOnceWithHedgeAsync(byte[] payloadBytes, byte[] wav, string format, string key,
         string transcriptionModel, SessionMetrics? metrics, string prefix, CancellationToken cancellation)
     {
-        var clock = Stopwatch.StartNew();
-        using var attempt1Cts = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        var attempt1Cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var registration1 = cancellation.Register(attempt1Cts.Cancel);
         var attempt1 = SendOnceAsync(payloadBytes, key, transcriptionModel, metrics, prefix, attempt1Cts.Token);
         var hedgeAfter = HedgeDelay(EstimateAudioSeconds(wav, format));
         if (hedgeAfter <= TimeSpan.Zero)
         {
-            var (earlyText, _) = await attempt1.ConfigureAwait(false);
-            return earlyText;
+            try { return (await attempt1.ConfigureAwait(false)).Text; }
+            finally { registration1.Dispose(); attempt1Cts.Dispose(); }
         }
         using var delayCts = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         var hedgeTimer = Task.Delay(hedgeAfter, delayCts.Token);
         if (await Task.WhenAny(attempt1, hedgeTimer).ConfigureAwait(false) == attempt1)
         {
             delayCts.Cancel();
-            var (promptText, _) = await attempt1.ConfigureAwait(false);
-            return promptText;
+            try { return (await attempt1.ConfigureAwait(false)).Text; }
+            finally { registration1.Dispose(); attempt1Cts.Dispose(); }
         }
-        cancellation.ThrowIfCancellationRequested();
-        var attempt2StartMs = clock.Elapsed.TotalMilliseconds;
-        using var attempt2Cts = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        if (cancellation.IsCancellationRequested)
+        {
+            try { await attempt1.ConfigureAwait(false); } catch { }
+            registration1.Dispose(); attempt1Cts.Dispose();
+            cancellation.ThrowIfCancellationRequested();
+        }
+        var attempt2Cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var registration2 = cancellation.Register(attempt2Cts.Cancel);
         var attempt2 = SendOnceAsync(payloadBytes, key, transcriptionModel, metrics, prefix + "Hedge ", attempt2Cts.Token);
+        var detached = false;
         try
         {
-            var firstDone = await Task.WhenAny(attempt1, attempt2).ConfigureAwait(false);
-            Task<(string Text, double ElapsedMs)> winnerTask, loserTask;
-            int winnerAttempt, loserAttempt;
-            double loserStartMs;
-            CancellationTokenSource loserCts;
-            if (firstDone == attempt1)
+            var pending = new List<Task<(string Text, double ElapsedMs)>> { attempt1, attempt2 };
+            Exception? failure = null;
+            while (pending.Count > 0)
             {
-                winnerTask = attempt1; loserTask = attempt2; winnerAttempt = 1; loserAttempt = 2;
-                loserStartMs = attempt2StartMs; loserCts = attempt2Cts;
-            }
-            else
-            {
-                winnerTask = attempt2; loserTask = attempt1; winnerAttempt = 2; loserAttempt = 1;
-                loserStartMs = 0; loserCts = attempt1Cts;
-            }
-            try
-            {
-                var (text, winnerMs) = await winnerTask.ConfigureAwait(false);
-                double? loserMs, savedMs;
-                if (loserTask.IsCompletedSuccessfully)
+                var finished = await Task.WhenAny(pending).ConfigureAwait(false);
+                pending.Remove(finished);
+                try
                 {
-                    loserMs = loserTask.Result.ElapsedMs;
-                    savedMs = loserMs - winnerMs;
+                    var (text, winnerMs) = await finished.ConfigureAwait(false);
+                    var winnerNumber = finished == attempt1 ? 1 : 2;
+                    registration1.Dispose(); registration2.Dispose();
+                    var loser = finished == attempt1 ? attempt2 : attempt1;
+                    var observer = loser.ContinueWith(task =>
+                    {
+                        double? loserMs = task.IsCompletedSuccessfully ? task.Result.ElapsedMs : null;
+                        metrics?.Hedge(hedgeAfter.TotalMilliseconds, winnerNumber, winnerMs, loserMs,
+                            loserMs.HasValue ? loserMs - winnerMs : null);
+                        attempt1Cts.Dispose(); attempt2Cts.Dispose();
+                    }, TaskScheduler.Default);
+                    metrics?.TrackBackground(observer);
+                    detached = true;
+                    return text;
                 }
-                else
+                catch (Exception ex)
                 {
-                    loserCts.Cancel();
-                    loserMs = clock.Elapsed.TotalMilliseconds - loserStartMs;
-                    savedMs = null;
+                    failure = ex;
                 }
-                metrics?.Hedge(hedgeAfter.TotalMilliseconds, winnerAttempt, winnerMs, loserMs, savedMs);
-                return text;
             }
-            catch
+            throw failure ?? new InvalidDataException("Both transcription requests failed.");
+        }
+        finally
+        {
+            if (!detached)
             {
-                var (text, winnerMs) = await loserTask.ConfigureAwait(false);
-                metrics?.Hedge(hedgeAfter.TotalMilliseconds, loserAttempt, winnerMs, null, null);
-                return text;
+                registration1.Dispose(); registration2.Dispose();
+                attempt1Cts.Cancel(); attempt2Cts.Cancel();
+                var observer = Task.WhenAll(attempt1.ContinueWith(_ => { }), attempt2.ContinueWith(_ => { }))
+                    .ContinueWith(_ => { attempt1Cts.Dispose(); attempt2Cts.Dispose(); });
+                metrics?.TrackBackground(observer);
             }
         }
-        finally { attempt1Cts.Cancel(); attempt2Cts.Cancel(); }
     }
     private async Task<(string Text, double ElapsedMs)> SendOnceAsync(byte[] payloadBytes, string key, string transcriptionModel,
         SessionMetrics? metrics, string prefix, CancellationToken cancellation)
     {
         var watch = Stopwatch.StartNew();
+        var outcome = "Failed";
+        try
+        {
         metrics?.RequestSize(payloadBytes.Length);
         using var request = new HttpRequestMessage(HttpMethod.Post, "https://openrouter.ai/api/v1/audio/transcriptions");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
@@ -266,7 +362,11 @@ public sealed class Transcriber(HttpClient client)
         var usage = root.TryGetProperty("usage", out var usageValue) ? usageValue : default;
         metrics?.Cost("voice", TranscriptionModels.IsMai(transcriptionModel) ? MaiModel : Model,
             usage.ValueKind == JsonValueKind.Object && usage.TryGetProperty("cost", out var cost) && cost.TryGetDecimal(out var amount) ? amount : null);
+        outcome = "Completed";
         return (transcript, watch.Elapsed.TotalMilliseconds);
+        }
+        catch (OperationCanceledException) { outcome = "Cancelled or timed out"; throw; }
+        finally { metrics?.Request(TranscriptionModels.IsMai(transcriptionModel) ? MaiModel : Model, watch.Elapsed.TotalMilliseconds, outcome); }
     }
 
     private static async Task<string?> ReadErrorDetailAsync(HttpResponseMessage response, CancellationToken cancellation)

@@ -101,7 +101,7 @@ public sealed class Credits(HttpClient http)
 
     private static string? Category(string? model) => model switch
     {
-        Transcriber.Model or Transcriber.MaiModel => "voice",
+        Transcriber.Model or Transcriber.MaiModel or "google/gemini-3.8-flash" => "voice",
         CleanupService.Model => "cleanup",
         _ => null
     };

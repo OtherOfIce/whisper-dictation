@@ -215,12 +215,12 @@ else {
         broadcast({ type: 'settings', settings }); return settings;
       }
       case 'saveSettings': {
-        if (!params || typeof params.liveChunks !== 'boolean' || typeof params.lockMode !== 'boolean' || (params.apiKey != null && (typeof params.apiKey !== 'string' || params.apiKey.length > 1024)) || (params.xaiApiKey != null && (typeof params.xaiApiKey !== 'string' || params.xaiApiKey.length > 1024))) throw new Error('Invalid settings.');
+        if (!params || typeof params.liveChunks !== 'boolean' || typeof params.doubleTranscription !== 'boolean' || typeof params.lockMode !== 'boolean' || (params.apiKey != null && (typeof params.apiKey !== 'string' || params.apiKey.length > 1024)) || (params.xaiApiKey != null && (typeof params.xaiApiKey !== 'string' || params.xaiApiKey.length > 1024))) throw new Error('Invalid settings.');
         if (!['gpt-transcribe', 'mai-transcribe-2-verbatim', 'mai-transcribe-2-clean', 'grok-voice-transcribe-2-streaming'].includes(params.transcriptionModel)) throw new Error('Invalid transcription model.');
         if (!['off', 'luna', 'luna-fast'].includes(params.cleanupMode)) throw new Error('Invalid cleanup mode.');
         validateDictionaryTerms(params.dictionaryTerms);
         if (params.transcriptionModel === 'grok-voice-transcribe-2-streaming' && (params.dictionaryTerms.length > 100 || params.dictionaryTerms.some(term => term.length > 50))) throw new Error('Grok streaming accepts up to 100 dictionary terms of 50 characters each.');
-        settings = testMode ? { ...settings, hasXaiKey: settings.hasXaiKey || !!params.xaiApiKey, liveChunks: params.liveChunks, lockMode: params.lockMode, transcriptionModel: params.transcriptionModel, cleanupMode: params.cleanupMode, dictionaryTerms: params.dictionaryTerms } : await send('saveSettings', params);
+        settings = testMode ? { ...settings, hasXaiKey: settings.hasXaiKey || !!params.xaiApiKey, liveChunks: params.liveChunks, doubleTranscription: params.doubleTranscription, lockMode: params.lockMode, transcriptionModel: params.transcriptionModel, cleanupMode: params.cleanupMode, dictionaryTerms: params.dictionaryTerms } : await send('saveSettings', params);
         broadcast({ type: 'settings', settings }); refreshCredits(); return settings;
       }
       case 'importWisprDictionary': {

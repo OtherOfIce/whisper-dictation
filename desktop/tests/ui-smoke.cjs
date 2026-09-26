@@ -133,6 +133,14 @@ exports.run = async ({ main, overlay, app, engineEvent, testOverlayActions }) =>
     assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.transcriptionModel)"), model);
   }
   assert.equal(await evaluate('document.getElementById("live-chunks").disabled'), true);
+  await evaluate("document.getElementById('transcription-model').value='mai-transcribe-2-clean'; document.getElementById('transcription-model').dispatchEvent(new Event('change'))");
+  assert.equal(await evaluate('document.getElementById("cleanup-mode").disabled'), false);
+  assert.equal(await evaluate('document.getElementById("live-chunks").disabled'), false);
+  assert.equal(await evaluate('document.getElementById("double-transcription").disabled'), false);
+  await evaluate("document.getElementById('double-transcription').checked=true; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))");
+  await wait(100);
+  assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.doubleTranscription)"), true);
+  await evaluate("document.getElementById('transcription-model').value='mai-transcribe-2-clean'; document.getElementById('transcription-model').dispatchEvent(new Event('change'))");
   for (const mode of ['luna', 'luna-fast', 'off']) {
     await evaluate(`document.getElementById('cleanup-mode').value=${JSON.stringify(mode)}; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))`);
     await wait(100);

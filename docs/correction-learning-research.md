@@ -1,5 +1,7 @@
 # Correction learning for pasted dictation (Windows UI Automation)
 
+The confirmation recommendation below was superseded by the [learning plan](correction-learning-plan.md): qualifying terms are saved by default, and a Windows notification offers Undo.
+
 - `TextPattern.TextChangedEvent` means that textual content was modified. It is a notification, not an edit explanation: it does not say whether the change came from typing, paste, autocorrect, script, or an undo. After the event, re-read the control; Microsoft warns that existing `TextPatternRange` objects can become invalid when provider text changes. [TextChangedEvent](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.textpattern.textchangedevent?view=windowsdesktop-10.0)
 - `TextPattern` exposes a text stream and ranges but is read-only for editing. A client can use `ValuePattern` or keyboard input where the target supports it, but should treat pattern availability as per-control capability rather than an assumption. [TextPattern overview](https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/ui-automation-textpattern-overview)
 - Start from the element with input focus (`GetFocusedElement`) immediately after the paste, then verify it is an editable text/document element and that it supports `TextPattern` or `ValuePattern`. Focus can move or the element can disappear; handle `UIA_E_ELEMENTNOTAVAILABLE` and re-check. [Obtaining UI Automation elements](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-obtainingelements)

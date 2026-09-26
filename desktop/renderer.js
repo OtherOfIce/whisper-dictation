@@ -133,11 +133,13 @@ const money = (number, digits = 2) => number == null ? '—' : new Intl.NumberFo
 const modelNames = {
   'openai/gpt-transcribe': 'GPT-Transcribe',
   'microsoft/mai-transcribe-2': 'MAI-Transcribe-2',
+  'google/gemini-3.8-flash': 'Gemini 3.8 Flash',
   'openai/gpt-5.6-luna': 'Luna 5.6',
   'openai/gpt-6-luna': 'Luna 6',
   'gpt-transcribe': 'GPT-Transcribe',
   'mai-transcribe-2-verbatim': 'MAI-Transcribe-2 · Verbatim',
   'mai-transcribe-2-clean': 'MAI-Transcribe-2 · Clean',
+  'gemini-3.8-flash': 'Gemini 3.8 Flash · Priority',
   'grok-voice-transcribe-2.0': 'Grok Voice Transcribe 2.0',
   'grok-voice-transcribe-2-streaming': 'Grok Voice Transcribe 2.0 · Streaming',
   luna: 'Luna 6',
@@ -226,20 +228,25 @@ function renderSettings(settings) {
   $('key-status').textContent = settings.hasKey ? 'Saved securely' : 'Not connected';
   $('xai-key-status').textContent = settings.hasXaiKey ? 'Saved securely' : 'Not connected';
   $('live-chunks').checked = !!settings.liveChunks;
+  $('double-transcription').checked = !!settings.doubleTranscription;
   $('lock-mode').checked = settings.lockMode !== false;
   $('transcription-model').value = settings.transcriptionModel || 'mai-transcribe-2-clean';
   $('cleanup-mode').value = settings.cleanupMode || 'off';
   $('dictionary-terms').value = Array.isArray(settings.dictionaryTerms) ? settings.dictionaryTerms.join('\n') : '';
-  updateStreamingSettings();
+  updateModelSettings();
 }
-function updateStreamingSettings() {
+function updateModelSettings() {
   const streaming = $('transcription-model').value === 'grok-voice-transcribe-2-streaming';
-  $('live-chunks').disabled = streaming;
+  const mai = $('transcription-model').value.startsWith('mai-transcribe-2-');
   $('live-chunks-note').textContent = streaming
     ? 'Grok streams microphone audio continuously, so this separate pause-chunk option does not apply.'
     : 'Experimental. Chunks may change punctuation or lose context. Cancel stops pending work; it cannot undo audio already uploaded.';
+  $('live-chunks').disabled = streaming;
+  $('double-transcription').disabled = !mai;
+  $('cleanup-mode').disabled = false;
+  $('cleanup-note').textContent = 'Adds a separate OpenRouter request before pasting. To fit the insertion, Luna also receives up to 500 nearby characters from the focused text field; password fields are excluded. Fast uses priority processing at twice the token price. If cleanup fails, the original transcript is used.';
 }
-$('transcription-model').onchange = updateStreamingSettings;
+$('transcription-model').onchange = updateModelSettings;
 $('lock-mode').onchange = async () => {
   const checkbox = $('lock-mode'); const nextValue = checkbox.checked; checkbox.disabled = true;
   try {
@@ -273,7 +280,7 @@ $('settings-form').onsubmit = async event => {
   event.preventDefault(); const button = event.submitter; button.disabled = true;
   try {
     const dictionaryTerms = $('dictionary-terms').value.split(/\r?\n/).map(term => term.trim()).filter(Boolean);
-    const settings = await call('saveSettings', { apiKey: $('api-key').value, xaiApiKey: $('xai-api-key').value, liveChunks: $('live-chunks').checked, lockMode: $('lock-mode').checked, transcriptionModel: $('transcription-model').value, cleanupMode: $('cleanup-mode').value, dictionaryTerms });
+    const settings = await call('saveSettings', { apiKey: $('api-key').value, xaiApiKey: $('xai-api-key').value, liveChunks: $('live-chunks').checked, doubleTranscription: $('double-transcription').checked, lockMode: $('lock-mode').checked, transcriptionModel: $('transcription-model').value, cleanupMode: $('cleanup-mode').value, dictionaryTerms });
     $('api-key').value = ''; $('xai-api-key').value = '';
     renderSettings(settings); $('save-message').textContent = 'Settings saved';
   } catch (error) { toast(error.message); } finally { button.disabled = false; }
@@ -323,6 +330,11 @@ async function renderPerformance() {  const id = selectedId;
       if (hedge.savedMs != null) facts.push(['Hedge saved', `≈ ${formatDuration(hedge.savedMs)} — attempt ${hedge.winnerAttempt} answered in ${formatDuration(hedge.winnerMs)}, the other took ${formatDuration(hedge.loserMs)}`]);
       else facts.push(['Hedge winner', `attempt ${hedge.winnerAttempt} answered in ${formatDuration(hedge.winnerMs)} — the other ran ${formatDuration(hedge.loserMs ?? hedge.cutoffMs)} with no response`]);
     }
+    for (const request of metrics.parallelRequests ?? [])
+      facts.push([`Request ${request.attempt}${request.selected ? ' · used' : ''}`, `${modelNames[request.model] || request.model} · ${formatDuration(request.durationMs)} · ${request.outcome}`]);
+    if (!(metrics.parallelRequests?.length))
+      for (const [index, request] of (metrics.requests ?? []).entries())
+        facts.push([`Request ${index + 1}`, `${modelNames[request.model] || request.model} · ${formatDuration(request.durationMs)} · ${request.outcome}`]);
     for (const fallback of metrics.fallbacks ?? []) facts.push(['Fallback from', `${modelNames[fallback.model] || fallback.model}: ${fallback.error}`]);
     $('timing-facts').replaceChildren(...facts.map(([name, text]) => { const item = document.createElement('div'); item.textContent = name; const value = document.createElement('strong'); value.textContent = text; item.append(value); return item; }));
   } catch (error) { toast(error.message); }

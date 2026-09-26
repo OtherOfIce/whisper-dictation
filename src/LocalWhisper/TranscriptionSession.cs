@@ -14,7 +14,8 @@ internal interface ITranscriptionSession
 }
 
 internal sealed class TranscriptionSession(HttpClient http, string key, SessionMetrics metrics, CancellationToken token,
-    IReadOnlyList<string>? dictionaryTerms = null, string transcriptionModel = TranscriptionModels.MaiClean)
+    IReadOnlyList<string>? dictionaryTerms = null, string transcriptionModel = TranscriptionModels.MaiClean,
+    bool doubleTranscription = false)
     : ITranscriptionSession
 {
     private readonly string[] dictionary = dictionaryTerms?.ToArray() ?? [];
@@ -58,7 +59,7 @@ internal sealed class TranscriptionSession(HttpClient http, string key, SessionM
                     token.ThrowIfCancellationRequested();
                     try
                     {
-                        var result = await new Transcriber(http).TranscribeAsync(encoded.Bytes, key, token, metrics, prefix, encoded.Format, dictionary, transcriptionModel).ConfigureAwait(false);
+                        var result = await new Transcriber(http).TranscribeAsync(encoded.Bytes, key, token, metrics, prefix, encoded.Format, dictionary, transcriptionModel, doubleTranscription).ConfigureAwait(false);
                         Interlocked.Increment(ref completed);
                         return result;
                     }

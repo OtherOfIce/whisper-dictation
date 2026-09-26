@@ -37,7 +37,7 @@ module.exports = {
       ...([0, 2].includes(i) ? [{ category: 'cleanup', model: 'openai/gpt-5.6-luna', amount: i === 0 ? 0.0003 : 0.0005 }] : [])
     ]
   } })),
-  settings: { hasKey: true, hasXaiKey: false, liveChunks: false, lockMode: true, transcriptionModel: 'mai-transcribe-2-clean', cleanupMode: 'off', dictionaryTerms: [] },
+  settings: { hasKey: true, hasXaiKey: false, liveChunks: false, doubleTranscription: true, lockMode: true, transcriptionModel: 'mai-transcribe-2-clean', cleanupMode: 'off', dictionaryTerms: [] },
   balance: {
     kind: 'account', remaining: 18.42, usage: 1.5832, usageDaily: .0642, message: 'OpenRouter account balance', updated: new Date().toISOString()
   },
