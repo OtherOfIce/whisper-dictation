@@ -5,7 +5,9 @@ import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.os.SystemClock
 import android.util.Log
+import org.json.JSONObject
 import java.io.File
 import java.io.RandomAccessFile
 import java.util.UUID
@@ -18,6 +20,10 @@ class AudioRecorder(private val context: Context) {
     private var outputFile: File? = null
     private var writerThread: Thread? = null
     @Volatile private var writerRunning = false
+    @Volatile private var captureStartedMs = 0L
+    @Volatile private var captureError: String? = null
+    private var captureInfo: JSONObject? = null
+    fun captureMetadata(): JSONObject? = captureInfo?.let { JSONObject(it.toString()) }
     val isActive: Boolean get() = recorder != null
 
     @SuppressLint("MissingPermission")
@@ -65,6 +71,14 @@ class AudioRecorder(private val context: Context) {
                 return false
             }
             recorder = audioRecord
+            captureStartedMs = SystemClock.elapsedRealtime()
+            captureError = null
+            captureInfo = JSONObject().put("source", "MIC").put("requestedSampleRate", AudioRecordingSpec.SAMPLE_RATE)
+                .put("reportedSampleRate", audioRecord.sampleRate).put("reportedChannels", audioRecord.channelCount)
+                .put("bufferBytes", bufferSize)
+            if (android.os.Build.VERSION.SDK_INT >= 23) {
+                audioRecord.routedDevice?.let { captureInfo?.put("inputDeviceType", it.type)?.put("inputDeviceName", it.productName.toString()) }
+            }
             outputFile = file
             writerRunning = true
             writerThread = thread(name = "WhisperWavWriter") {
@@ -109,6 +123,9 @@ class AudioRecorder(private val context: Context) {
         val writer = writerThread
         writerThread = null
         if (writer != null && writer !== Thread.currentThread()) runCatching { writer.join(2_000) }
+        captureInfo?.put("captureElapsedMs", SystemClock.elapsedRealtime() - captureStartedMs)
+            ?.put("writerFinished", writer?.isAlive != true)
+        captureError?.let { captureInfo?.put("readErrorType", it) }
         runCatching { current.release() }
     }
 
@@ -127,6 +144,7 @@ class AudioRecorder(private val context: Context) {
                 }
             }
         } catch (error: Exception) {
+            captureError = error.javaClass.simpleName
             if (writerRunning) Log.e(TAG, "Could not record microphone audio", error)
         } finally {
             writerRunning = false

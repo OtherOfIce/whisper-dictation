@@ -75,6 +75,7 @@ The Android app lives in `android/`. It keeps HeliBoard's keyboard, dictionaries
 - Add preferred spellings and names to the personal transcription dictionary.
 - MAI requests race by default; both may be billed. Voice input settings can turn the race off and enable optional Luna cleanup.
 - If transcription fails, the keyboard keeps one recording locally. Tap the microphone to retry it in a text field, or discard it in Voice input settings.
+- Voice input → Recording diagnostics can temporarily keep ten recordings with playback, raw transcripts, and audio measurements. It saves audio locally and supports ZIP export or [retrieval over ADB](docs/android-recording-diagnostics.md).
 - Gesture typing uses HeliBoard's optional ABI-specific native library. See `android/GESTURE_TYPING_RESEARCH.md`.
 
 Build the installable development APK with:

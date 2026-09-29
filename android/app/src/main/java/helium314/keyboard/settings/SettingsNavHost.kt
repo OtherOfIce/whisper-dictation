@@ -33,6 +33,7 @@ import helium314.keyboard.settings.screens.SubtypeScreen
 import helium314.keyboard.settings.screens.TextCorrectionScreen
 import helium314.keyboard.settings.screens.ToolbarScreen
 import helium314.keyboard.settings.screens.WhisperSettingsScreen
+import helium314.keyboard.settings.screens.RecordingDiagnosticsScreen
 import helium314.keyboard.settings.screens.gesturedata.GestureDataScreen
 import helium314.keyboard.settings.screens.gesturedata.ReviewScreen
 import kotlinx.coroutines.CoroutineScope
@@ -108,7 +109,10 @@ fun SettingsNavHost(
             AdvancedSettingsScreen(onClickBack = ::goBack)
         }
         composable(SettingsDestination.Whisper) {
-            WhisperSettingsScreen(onClickBack = ::goBack)
+            WhisperSettingsScreen(onClickBack = ::goBack, onClickDiagnostics = { navController.navigate(SettingsDestination.RecordingDiagnostics) })
+        }
+        composable(SettingsDestination.RecordingDiagnostics) {
+            RecordingDiagnosticsScreen(onClickBack = ::goBack)
         }
         composable(SettingsDestination.Debug) {
             DebugScreen(onClickBack = ::goBack)
@@ -169,6 +173,7 @@ object SettingsDestination {
     const val Subtype = "subtype/"
     const val Layouts = "layouts"
     const val Whisper = "whisper"
+    const val RecordingDiagnostics = "recording_diagnostics"
     const val Dictionaries = "dictionaries"
     val navTarget = MutableStateFlow(Settings)
 

@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -15,14 +16,17 @@ import helium314.keyboard.latin.settings.Settings
 import helium314.keyboard.latin.utils.prefs
 import kotlinx.coroutines.*
 import java.io.File
+import org.json.JSONObject
 
 private const val TAG = "WhisperManager"
 data class TranscriptionResult(val text: String, val editorSessionToken: Long)
 
-class WhisperManager(private val context: Context) {
-    private val recorder = AudioRecorder(context)
-    private val client = OpenRouterClient()
-    private val credentials = SecureCredentialStore(context)
+class WhisperManager @JvmOverloads constructor(
+    private val context: Context,
+    private val recorder: AudioRecorder = AudioRecorder(context),
+    private val client: OpenRouterClient = OpenRouterClient(),
+    private val credentials: SecureCredentialStore = SecureCredentialStore(context),
+) {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     init {
         scope.launch {
@@ -123,11 +127,29 @@ class WhisperManager(private val context: Context) {
         val keywords = dictionary.keywords
         val raceMai = prefs.getBoolean(PREF_RACE_MAI, true)
         val cleanup = prefs.getBoolean(PREF_LUNA_CLEANUP, false)
+        val logStore = if (RecordingLogStore.enabled(context)) RecordingLogStore.forContext(context) else null
+        val capture = if (retry) null else recorder.captureMetadata()
         transcribing = true; onStateChanged?.invoke(RecordingState.TRANSCRIBING)
-        job = scope.launch {
+        job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             var succeeded = false
+            var logId: String? = null
+            var rawTranscript: String? = null
+            var finalTranscript: String? = null
+            var outcome = "Cancelled"
+            var errorType: String? = null
+            val started = SystemClock.elapsedRealtime()
             try {
+                if (logStore != null) withContext(NonCancellable + Dispatchers.IO) {
+                    runCatching {
+                        val metadata = JSONObject().put("requestedModel", transcriptionModel).put("language", language)
+                            .put("dictionaryTermCount", keywords.size).put("raceMai", raceMai).put("cleanupEnabled", cleanup).put("manualRetry", retry)
+                        if (capture != null) metadata.put("capture", capture)
+                        logId = logStore.begin(file, metadata)
+                    }.onFailure { Log.w(TAG, "[DEBUG-audio] Could not save recording diagnostics") }
+                }
+                ensureActive()
                 val raw = client.transcribeWithFallback(file, apiKey, language, keywords, transcriptionModel, raceMai)
+                rawTranscript = raw
                 if (cleanup) {
                     cleaning = true
                     onStateChanged?.invoke(RecordingState.CLEANING)
@@ -140,18 +162,26 @@ class WhisperManager(private val context: Context) {
                     }
                     raw
                 } else raw
+                finalTranscript = text
                 if (operationId == requestOperation && editorSessionToken == requestSession) {
                     onTranscriptionResult?.invoke(TranscriptionResult(text, requestSession))
                     succeeded = true
-                }
+                    outcome = "Transcribed"
+                } else outcome = "Editor changed"
             } catch (_: CancellationException) {
             } catch (error: Exception) {
+                outcome = "Failed"
+                errorType = error.javaClass.simpleName
                 Log.e(TAG, "Transcription request failed: ${error.javaClass.simpleName}: ${error.message}")
                 if (operationId == requestOperation) {
                     if (!retry) retainFailed(file)
                     Toast.makeText(context, "Transcription failed. Tap the microphone to retry.", Toast.LENGTH_LONG).show()
                 }
             } finally {
+                withContext(NonCancellable + Dispatchers.IO) {
+                    logId?.let { id -> runCatching { logStore?.finish(id, outcome, rawTranscript, finalTranscript, SystemClock.elapsedRealtime() - started, errorType) }
+                        .onFailure { Log.w(TAG, "[DEBUG-audio] Could not finish recording diagnostics") } }
+                }
                 if (succeeded) failedRecording.delete()
                 if (!retry) file.delete()
                 if (operationId == requestOperation) {
@@ -173,8 +203,11 @@ class WhisperManager(private val context: Context) {
 
     fun cancelCurrent(showMessage: Boolean = false) {
         val wasActive = recorder.isActive || transcribing
-        operationId++; recorder.cancel(); job?.cancel(); job = null
-        recordingFile?.delete(); recordingFile = null; transcribing = false; cleaning = false
+        operationId++; recorder.cancel()
+        val activeJob = job
+        activeJob?.cancel(); job = null
+        if (activeJob == null) recordingFile?.delete()
+        recordingFile = null; transcribing = false; cleaning = false
         onStateChanged?.invoke(recordingState)
         if (showMessage && wasActive) Toast.makeText(context, "Voice input cancelled", Toast.LENGTH_SHORT).show()
     }

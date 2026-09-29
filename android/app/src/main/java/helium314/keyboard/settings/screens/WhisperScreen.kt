@@ -36,7 +36,7 @@ import helium314.keyboard.settings.Setting
 import helium314.keyboard.settings.preferences.ListPreference
 
 @Composable
-fun WhisperSettingsScreen(onClickBack: () -> Unit) {
+fun WhisperSettingsScreen(onClickBack: () -> Unit, onClickDiagnostics: () -> Unit = {}) {
     val context = LocalContext.current
     val prefs = context.prefs()
     val credentials = remember { SecureCredentialStore(context) }
@@ -77,6 +77,7 @@ fun WhisperSettingsScreen(onClickBack: () -> Unit) {
     }) { padding ->
         Column(Modifier.padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
             Spacer(Modifier.height(12.dp))
+            TextButton(onClick = onClickDiagnostics) { Text("Recording diagnostics") }
             Text(if (permissionGranted) "Microphone access granted" else "Microphone access is required")
             if (!permissionGranted) Button(onClick = { permissionLauncher.launch(Manifest.permission.RECORD_AUDIO) }) { Text("Grant microphone access") }
             Spacer(Modifier.height(12.dp))
