@@ -16,6 +16,7 @@ var model = Argument(args, "--model") ?? Transcriber.Model;
 var service = (Argument(args, "--service") ?? "openrouter").ToLowerInvariant();
 var style = Argument(args, "--style");
 var provider = Argument(args, "--provider");
+var requiredProvider = Argument(args, "--require-provider");
 var language = Argument(args, "--language");
 var locales = Argument(args, "--locales");
 var xaiFormat = bool.TryParse(Argument(args, "--xai-format"), out var configuredXaiFormat) && configuredXaiFormat;
@@ -46,6 +47,13 @@ if (service is not ("openrouter" or "xai"))
     Console.Error.WriteLine("--service must be openrouter or xai.");
     return 2;
 }
+if (requiredProvider is not null && service != "openrouter")
+{
+    Console.Error.WriteLine("--require-provider applies only to OpenRouter.");
+    return 2;
+}
+if (provider is not null && service == "openrouter")
+    Console.Error.WriteLine("Warning: OpenRouter transcription ignores per-request provider routing; --provider does not pin the provider. Use --require-provider to verify the actual provider.");
 if (style is not null && style is not ("verbatim" or "clean"))
 {
     Console.Error.WriteLine("--style must be verbatim or clean.");
@@ -146,7 +154,9 @@ var key = service == "xai"
     ? Environment.GetEnvironmentVariable("XAI_API_KEY")
         ?? Environment.GetEnvironmentVariable("XAI_API_KEY", EnvironmentVariableTarget.User)
         ?? ""
-    : Settings.LoadKey();
+    : Environment.GetEnvironmentVariable("OPENROUTER_BENCHMARK_KEY")
+        ?? Environment.GetEnvironmentVariable("OPENROUTER_BENCHMARK_KEY", EnvironmentVariableTarget.User)
+        ?? Settings.LoadKey();
 if (string.IsNullOrWhiteSpace(key))
 {
     Console.Error.WriteLine(service == "xai"
@@ -185,6 +195,10 @@ async Task<SampleResult> Evaluate(Sample pair)
             provider, language, locales, xaiFormat, fillerWords, vadThreshold);
         requestWatch.Stop();
 
+        var actualProvider = requiredProvider is null ? null : await GetGenerationProvider(http, key, capture.GenerationId);
+        if (requiredProvider is not null && !string.Equals(actualProvider, requiredProvider, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException($"Provider verification failed: expected {requiredProvider}, got {actualProvider ?? "unknown"}.");
+
         var distance = WordDistance(reference, transcript, equivalences);
         var estimate = (decimal)audioSeconds / 3600m * pricePerHour;
         var result = new SampleResult(pair.Id, audioSeconds, wav.LongLength, encoded.Bytes.LongLength, encoded.Format,
@@ -192,8 +206,12 @@ async Task<SampleResult> Evaluate(Sample pair)
             dictionaryTerms.Length, pair.ReferenceKind, reference, transcript, distance.ReferenceWords, distance.Substitutions,
             distance.Deletions, distance.Insertions, distance.ErrorRate,
             capture.UsageSeconds, capture.InputTokens, capture.OutputTokens,
-            capture.TotalTokens, capture.Cost, estimate, null);
-        Console.WriteLine($"{pair.Id,2}: audio={audioSeconds,5:F1}s dict={dictionaryTerms.Length,3} upload={encoded.Format}:{encoded.Bytes.Length / 1024.0,6:F1}KiB encode={encodeWatch.Elapsed.TotalMilliseconds,5:F0}ms request={requestWatch.Elapsed.TotalMilliseconds,5:F0}ms WER={distance.ErrorRate,6:P1} S/D/I={distance.Substitutions}/{distance.Deletions}/{distance.Insertions} cost={Money(capture.Cost)}");
+            capture.TotalTokens, capture.Cost, estimate, null)
+        {
+            ProviderName = actualProvider,
+            GenerationId = capture.GenerationId
+        };
+        Console.WriteLine($"{pair.Id,2}: audio={audioSeconds,5:F1}s dict={dictionaryTerms.Length,3} upload={encoded.Format}:{encoded.Bytes.Length / 1024.0,6:F1}KiB encode={encodeWatch.Elapsed.TotalMilliseconds,5:F0}ms request={requestWatch.Elapsed.TotalMilliseconds,5:F0}ms WER={distance.ErrorRate,6:P1} S/D/I={distance.Substitutions}/{distance.Deletions}/{distance.Insertions} cost={Money(capture.Cost)} provider={actualProvider ?? "unverified"}");
         return result;
     }
     catch (Exception error)
@@ -361,6 +379,7 @@ static async Task<string> TranscribeOpenRouter(HttpClient http, byte[] audio, st
         var providerPayload = new Dictionary<string, object>();
         if (!string.IsNullOrWhiteSpace(provider))
         {
+            providerPayload["only"] = new[] { provider! };
             providerPayload["order"] = new[] { provider! };
             providerPayload["allow_fallbacks"] = false;
         }
@@ -422,6 +441,33 @@ static async Task<string> TranscribeXai(HttpClient http, byte[] audio, string fo
 
 static string Money(decimal? value) => value.HasValue ? $"${value.Value:F6}" : "n/a";
 
+static async Task<string> GetGenerationProvider(HttpClient http, string key, string? generationId)
+{
+    if (string.IsNullOrWhiteSpace(generationId))
+        throw new InvalidDataException("OpenRouter did not return X-Generation-Id; provider cannot be verified.");
+    for (var attempt = 0; attempt < 20; attempt++)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get,
+            "https://openrouter.ai/api/v1/generation?id=" + Uri.EscapeDataString(generationId));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+        using var response = await http.SendAsync(request);
+        if (response.StatusCode == HttpStatusCode.NotFound && attempt < 19)
+        {
+            await Task.Delay(500);
+            continue;
+        }
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException($"Generation metadata returned HTTP {(int)response.StatusCode} for {generationId}.");
+        var body = await response.Content.ReadAsByteArrayAsync();
+        using var json = JsonDocument.Parse(body);
+        if (!json.RootElement.TryGetProperty("data", out var data) ||
+            !data.TryGetProperty("provider_name", out var providerName) || providerName.ValueKind != JsonValueKind.String)
+            throw new InvalidDataException("OpenRouter generation metadata did not identify a provider.");
+        return providerName.GetString()!;
+    }
+    throw new UnreachableException();
+}
+
 internal sealed class UsageCaptureHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
 {
     public double? UsageSeconds { get; private set; }
@@ -429,12 +475,15 @@ internal sealed class UsageCaptureHandler(HttpMessageHandler inner) : Delegating
     public int? OutputTokens { get; private set; }
     public int? TotalTokens { get; private set; }
     public decimal? Cost { get; private set; }
+    public string? GenerationId { get; private set; }
 
     public void Reset() => (UsageSeconds, InputTokens, OutputTokens, TotalTokens, Cost) = (null, null, null, null, null);
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var response = await base.SendAsync(request, cancellationToken);
+        if (response.Headers.TryGetValues("X-Generation-Id", out var ids))
+            GenerationId = ids.FirstOrDefault();
         if (response.Content is null) return response;
         var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
         var mediaType = response.Content.Headers.ContentType?.MediaType;
@@ -469,7 +518,11 @@ internal sealed record SampleResult(string Id, double AudioSeconds, long WavByte
     double EncodeMs, double RequestMs, int DictionaryTerms, string ReferenceKind, string Reference, string Transcript, int ReferenceWords,
     int Substitutions, int Deletions, int Insertions, double WordErrorRate, double? UsageSeconds,
     int? InputTokens, int? OutputTokens, int? TotalTokens, decimal? ReportedCost,
-    decimal EstimatedCost, string? Error);
+    decimal EstimatedCost, string? Error)
+{
+    public string? ProviderName { get; init; }
+    public string? GenerationId { get; init; }
+}
 internal sealed record Aggregate(int Samples, int Successful, double AudioSeconds, double MedianEncodeMs,
     double MedianRequestMs, double P90RequestMs, double P95RequestMs, double MeanRequestMs, int WordErrors, int ReferenceWords,
     double MicroWordErrorRate, double MacroWordErrorRate, decimal? ReportedCost, int ReportedCostSamples,

@@ -16,10 +16,11 @@ app.setName('Local Whisper');
 if (testMode) app.setPath('userData', path.join(app.getPath('temp'), 'local-whisper-ui-test'));
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 else {
-  let main, overlay, tray, engine, quitting = false, state = { mode: 'Idle' }, history = [], historyError = false;
+  let main, overlay, learning, tray, engine, quitting = false, state = { mode: 'Idle' }, history = [], historyError = false;
   const testOverlayActions = [];
   let nextId = 0, settings = {}, balance = null, costLedger = null, refreshPromise, saveQueue = Promise.resolve(), updateReadyVersion = null;
   const pending = new Map();
+  const learningToasts = new Map();
   const currentCosts = () => getDisplayedCostStats(history, costLedger);
   const historyPath = () => path.join(app.getPath('userData'), 'history.sqlite');
   const historyStore = new HistoryStore(historyPath(), safeStorage, path.join(app.getPath('userData'), 'history.bin'));
@@ -70,6 +71,17 @@ else {
     note.on('click', () => { clipboard.writeText(textToCopy); showMain('history'); });
     note.show();
   }
+  function showLearningToast(id, term) {
+    learningToasts.set(id, term);
+    while (learningToasts.size > 3) learningToasts.delete(learningToasts.keys().next().value);
+    const height = 72 + learningToasts.size * 38;
+    learning.setSize(360, height);
+    const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+    learning.setPosition(area.x + area.width - 378, area.y + area.height - height - 16);
+    learning.webContents.send('event', { type: 'learningToast', id, term });
+    learning.showInactive();
+    learning.moveTop();
+  }
   function persist(audioById) {
     if (testMode) return;
     if (historyError) { notify('Could not save history. Your current transcripts are still available in this window.'); return; }
@@ -98,6 +110,18 @@ else {
       return;
     }
     if (event.type === 'ready') { settings = event.settings; refreshCredits(); }
+    if (event.type === 'settings') settings = event.settings;
+    if (event.type === 'dictionaryLearned') {
+      settings = event.settings;
+      broadcast({ type: 'dictionaryLearned', term: event.term, settings });
+      showLearningToast(event.id, event.term);
+      return;
+    }
+    if (event.type === 'dictionaryLearningUndone') {
+      settings = event.settings;
+      for (const [id, term] of learningToasts) if (term === event.term) learningToasts.delete(id);
+      learning.webContents.send('event', { type: 'dictionaryLearningUndone', term: event.term });
+    }
     if (event.type === 'state') {
       const wasIdle = state.mode === 'Idle'; state = event;
       const overlayInteractive = event.mode === 'LockMode';
@@ -189,7 +213,18 @@ else {
   ipcMain.handle('command', async (event, method, params = {}) => {
     const isMain = main && event.sender === main.webContents;
     const isOverlay = overlay && event.sender === overlay.webContents;
-    if (!isMain && !isOverlay) throw new Error('Unknown window.');
+    const isLearning = learning && event.sender === learning.webContents;
+    if (!isMain && !isOverlay && !isLearning) throw new Error('Unknown window.');
+    if (isLearning) {
+      if (method === 'hideLearningToast') { learning.hide(); learningToasts.clear(); return true; }
+      if (method !== 'undoLearning' || !params || typeof params.id !== 'string' || !learningToasts.has(params.id)) throw new Error('Unknown learning action.');
+      if (testMode) {
+        const term = learningToasts.get(params.id);
+        engineEvent({ type: 'dictionaryLearningUndone', term, settings: { ...settings, dictionaryTerms: settings.dictionaryTerms.filter(value => value !== term) } });
+        return true;
+      }
+      return send('undoLearning', { id: params.id });
+    }
     if (isOverlay) {
       if (method === 'initial') return { state };
       if (!['cancel', 'finish'].includes(method)) throw new Error('Unknown toolbar action.');
@@ -217,12 +252,12 @@ else {
         broadcast({ type: 'settings', settings }); return settings;
       }
       case 'saveSettings': {
-        if (!params || typeof params.liveChunks !== 'boolean' || typeof params.doubleTranscription !== 'boolean' || typeof params.lockMode !== 'boolean' || (params.apiKey != null && (typeof params.apiKey !== 'string' || params.apiKey.length > 1024)) || (params.xaiApiKey != null && (typeof params.xaiApiKey !== 'string' || params.xaiApiKey.length > 1024))) throw new Error('Invalid settings.');
+        if (!params || typeof params.liveChunks !== 'boolean' || typeof params.doubleTranscription !== 'boolean' || typeof params.lockMode !== 'boolean' || typeof params.autoLearn !== 'boolean' || (params.apiKey != null && (typeof params.apiKey !== 'string' || params.apiKey.length > 1024)) || (params.xaiApiKey != null && (typeof params.xaiApiKey !== 'string' || params.xaiApiKey.length > 1024))) throw new Error('Invalid settings.');
         if (!['gpt-transcribe', 'mai-transcribe-2-verbatim', 'mai-transcribe-2-clean', 'grok-voice-transcribe-2-streaming'].includes(params.transcriptionModel)) throw new Error('Invalid transcription model.');
         if (!['off', 'luna', 'luna-fast'].includes(params.cleanupMode)) throw new Error('Invalid cleanup mode.');
         validateDictionaryTerms(params.dictionaryTerms);
         if (params.transcriptionModel === 'grok-voice-transcribe-2-streaming' && (params.dictionaryTerms.length > 100 || params.dictionaryTerms.some(term => term.length > 50))) throw new Error('Grok streaming accepts up to 100 dictionary terms of 50 characters each.');
-        settings = testMode ? { ...settings, hasXaiKey: settings.hasXaiKey || !!params.xaiApiKey, liveChunks: params.liveChunks, doubleTranscription: params.doubleTranscription, lockMode: params.lockMode, transcriptionModel: params.transcriptionModel, cleanupMode: params.cleanupMode, dictionaryTerms: params.dictionaryTerms } : await send('saveSettings', params);
+        settings = testMode ? { ...settings, hasXaiKey: settings.hasXaiKey || !!params.xaiApiKey, liveChunks: params.liveChunks, doubleTranscription: params.doubleTranscription, lockMode: params.lockMode, autoLearn: params.autoLearn, transcriptionModel: params.transcriptionModel, cleanupMode: params.cleanupMode, dictionaryTerms: params.dictionaryTerms } : await send('saveSettings', params);
         broadcast({ type: 'settings', settings }); refreshCredits(); return settings;
       }
       case 'importWisprDictionary': {
@@ -343,8 +378,10 @@ else {
     overlay = new BrowserWindow({ width: 192, height: 56, frame: false, transparent: true, resizable: false, focusable: false, skipTaskbar: true, alwaysOnTop: true, show: false, hasShadow: false, webPreferences });
     overlay.setAlwaysOnTop(true, 'screen-saver');
     overlay.setIgnoreMouseEvents(true);
+    learning = new BrowserWindow({ width: 360, height: 110, frame: false, transparent: true, resizable: false, focusable: false, skipTaskbar: true, alwaysOnTop: true, show: false, hasShadow: false, webPreferences });
+    learning.setAlwaysOnTop(true, 'screen-saver');
     if (testMode) for (const win of [main, overlay]) win.webContents.on('console-message', event => console.log('renderer:', event.message));
-    await Promise.all([secure(main, 'index.html'), secure(overlay, 'overlay.html')]);
+    await Promise.all([secure(main, 'index.html'), secure(overlay, 'overlay.html'), secure(learning, 'learning-toast.html')]);
     if (!testMode) {
       const icon = nativeImage.createFromPath(path.join(__dirname, 'assets', 'tray.png'));
       tray = new Tray(icon); tray.setToolTip('Local Whisper');
@@ -360,6 +397,6 @@ else {
       setInterval(() => { if (main.isVisible()) { refreshCredits(); broadcast({ type: 'stats', stats: getWordStats(history), costs: currentCosts() }); } }, 60000).unref();
     }
     if (!startupMode) main.show();
-    if (testMode) await require('./tests/ui-smoke.cjs').run({ main, overlay, app, engineEvent, testOverlayActions });
+    if (testMode) await require('./tests/ui-smoke.cjs').run({ main, overlay, learning, app, engineEvent, testOverlayActions });
   }).catch(error => { if (testMode) console.error(error); app.exit(1); });
 }

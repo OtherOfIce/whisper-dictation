@@ -519,6 +519,10 @@ class SuggestionStripView(context: Context, attrs: AttributeSet?, defStyle: Int)
                     VoiceKeyStateBackground.show(voiceKey, Color.parseColor("#CC0000"))
                 helium314.keyboard.latin.whisper.WhisperManager.RecordingState.TRANSCRIBING ->
                     VoiceKeyStateBackground.show(voiceKey, Color.parseColor("#FF8800"))
+                helium314.keyboard.latin.whisper.WhisperManager.RecordingState.CLEANING ->
+                    VoiceKeyStateBackground.show(voiceKey, Color.parseColor("#CFBFE2"))
+                helium314.keyboard.latin.whisper.WhisperManager.RecordingState.RETRY_READY ->
+                    VoiceKeyStateBackground.show(voiceKey, Color.parseColor("#B00020"))
                 helium314.keyboard.latin.whisper.WhisperManager.RecordingState.IDLE -> {
                     VoiceKeyStateBackground.clear(voiceKey)
                     if (voiceKey.parent === toolbar && voiceIsQuickPinned) {

@@ -30,6 +30,7 @@ internal static class Program
             XaiContract().GetAwaiter().GetResult();
             CleanupChecks.RunAsync(Check).GetAwaiter().GetResult();
             VocabularyChecks.RunAsync(Check).GetAwaiter().GetResult();
+            CorrectionLearningChecks();
             PauseSplitting();
             Pipeline().GetAwaiter().GetResult();
             CreditChecks().GetAwaiter().GetResult();
@@ -72,6 +73,42 @@ internal static class Program
         Check(activity.Rows is [{ Category: "voice", Model: Transcriber.MaiModel, Amount: 0.012m, Requests: 4 }, { Category: "cleanup", Model: CleanupService.Model, Amount: 0.003m, Requests: 2 }, { Category: "voice", Model: "google/gemini-3.8-flash", Amount: 0.002m, Requests: 1 }], "Activity preserves historical voice and Luna costs");
         Check(activity.Rows[0].Provider == "Azure" && activity.Rows[0].Endpoint == "ep-1", "Activity keeps the provider endpoint breakdown");
         Check(activity.Through == DateTime.UtcNow.Date.AddDays(-1), "Activity stops at the last completed UTC day");
+    }
+    private static void CorrectionLearningChecks()
+    {
+        Check(CorrectionLearning.TryLocatePastedText("\n\n", "Zetasizer, Nanosite, Ares.\n", "Zetasizer, Nanosite, Ares.", out var left, out var right)
+            && left == "" && right == "\n", "Paste verification locates text when the editor changes its surrounding newlines");
+        Check(!CorrectionLearning.TryLocatePastedText("Ares.", "Ares. Ares.", "Ares.", out _, out _), "Paste verification rejects text that was already present");
+        Check(CorrectionLearning.Candidate("The Roghage is here.", "The Raikage is here.") == "Raikage", "A changed word produces the full preferred spelling");
+        Check(CorrectionLearning.Candidate("Meet astra tomorrow.", "Meet Astra tomorrow.") == "Astra", "A capitalization correction can teach a preferred spelling");
+        Check(CorrectionLearning.Candidate("Roghage", "Rogh") is null, "Partial deletion does not create a learned word");
+        Check(CorrectionLearning.Candidate("The Roghage is here.", "The Roghage is here. Also") is null, "Appended typing is not learned");
+        Check(CorrectionLearning.Candidate("Meet at five.", "Meet at six.") is null, "Numbers and dates are not learned as spelling corrections");
+        Check(CorrectionLearning.Candidate("Roghage is here.", "Raikage was here.") is null, "Two changed words are not learned");
+        Check(CorrectionLearning.Candidate("one two", "one two three") is null, "Inserted words are not learned");
+        Check(CorrectionLearning.CandidateTerms("Zetasizer, Nanosite, Ares.", "Zetasizer, NanoSight, Aeris").SequenceEqual(["NanoSight", "Aeris"]), "Two independent corrections are learned even when final punctuation changes");
+        Check(CorrectionLearning.CandidateTerms("I used a Rasengon.", "I used a Rasengan.").SequenceEqual(["Rasengan"]), "A single name correction is learned");
+        Check(CorrectionLearning.CandidateTerms("Zetasizer, Nanosite, Ares.", "Zetasizer, Nanosite, Ares").Length == 0, "Punctuation edits alone do not add a term");
+        var tracker = new CorrectionLearning.Tracker("Zetasizer, Nanosite, Ares.");
+        Check(tracker.Observe("Zetasizer, NanoSight, Ares.", 0).Length == 0, "A fresh edit is not learned yet");
+        Check(tracker.Observe("Zetasizer, NanoSight, Ares.", 2500).SequenceEqual([new CorrectionLearning.CorrectionUpdate(1, null, "NanoSight")]), "The first settled correction is learned");
+        Check(tracker.Observe("Zetasizer, NanoSight, Aeris", 2600).Length == 0, "The second edit is not learned while being typed");
+        Check(tracker.Observe("Zetasizer, NanoSight, Aeris", 5100).SequenceEqual([new CorrectionLearning.CorrectionUpdate(2, null, "Aeris")]), "A later correction is learned without notifying twice for the first");
+        var partial = new CorrectionLearning.Tracker("Nanosite");
+        Check(partial.Observe("nanor", 0).Length == 0 && partial.Observe("nanos", 600).Length == 0
+            && partial.Observe("nanosi", 1200).Length == 0 && partial.Observe("nanosig", 1800).Length == 0
+            && partial.Observe("nanosigh", 2400).Length == 0 && partial.Observe("nanosight", 3000).Length == 0
+            && partial.Observe("nanosight", 5500).SequenceEqual([new CorrectionLearning.CorrectionUpdate(0, null, "nanosight")]),
+            "Letter-by-letter correction saves only the settled spelling");
+        var revised = new CorrectionLearning.Tracker("Nanosite");
+        revised.Observe("nanor", 0);
+        Check(revised.Observe("nanor", 2500).SequenceEqual([new CorrectionLearning.CorrectionUpdate(0, null, "nanor")]), "A long pause can produce a provisional spelling");
+        revised.Observe("NanoSight", 3000);
+        Check(revised.Observe("NanoSight", 5500).SequenceEqual([new CorrectionLearning.CorrectionUpdate(0, "nanor", "NanoSight")]), "A later revision replaces the provisional spelling");
+        var sent = new CorrectionLearning.Tracker("Nanosite");
+        Check(sent.Observe("NanoSight", 0).Length == 0
+            && sent.Commit("NanoSight").SequenceEqual([new CorrectionLearning.CorrectionUpdate(0, null, "NanoSight")]),
+            "A corrected word can be learned when the composer clears before the settle delay");
     }
     private static async Task Fallback()
     {

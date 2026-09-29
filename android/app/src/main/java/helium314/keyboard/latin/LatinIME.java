@@ -805,6 +805,9 @@ public class LatinIME extends InputMethodService implements
         if (hasSuggestionStripView()) {
             mSuggestionStripView.setRtl(mRichImm.getCurrentSubtype().isRtlSubtype());
             mSuggestionStripView.setListener(this, view);
+            if (mWhisperManager != null) {
+                mSuggestionStripView.updateWhisperState(mWhisperManager.getRecordingState());
+            }
         }
     }
 

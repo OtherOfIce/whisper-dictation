@@ -1,6 +1,6 @@
 # Personal dictionary plan
 
-Status: the preferred-terms Settings editor and OpenRouter keyword hints are implemented. Paste one term or phrase per line and save; encrypted terms are snapshotted per recording and sent with each chunk. Empty lists omit provider hints. Automatic learning and local replacement rules remain unimplemented. The [automatic learning plan](correction-learning-plan.md) calls for saving qualifying terms by default with a Windows notification offering Undo. See [the research](dictionary-investigation.md) for provider support and sources.
+Status: the preferred-terms Settings editor, OpenRouter keyword hints, and an initial automatic learning path are implemented. Paste one term or phrase per line and save; encrypted terms are snapshotted per recording and sent with each chunk. Empty lists omit provider hints. Learning watches supported focused text fields for up to two clear word corrections after paste, saves each settled spelling by default, and shows an app popup with Undo. Local replacement rules remain unimplemented. See the [automatic learning plan](correction-learning-plan.md) and [provider research](dictionary-investigation.md).
 
 ## Update after the OpenRouter experiment
 

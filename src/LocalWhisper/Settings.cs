@@ -11,6 +11,9 @@ internal static class Settings
     private static readonly string DictionaryFile = Path.Combine(Folder, "dictionary.bin");
     public static string[] LoadDictionaryTerms() => Vocabulary.Load(DictionaryFile);
     public static void SaveDictionaryTerms(string[] terms) => Vocabulary.Save(DictionaryFile, terms);
+    private static readonly string AutoLearnFile = Path.Combine(Folder, "auto-learn.txt");
+    public static bool AutoLearn => !File.Exists(AutoLearnFile) || File.ReadAllText(AutoLearnFile).Trim() == "true";
+    public static void SaveAutoLearn(bool enabled) { Directory.CreateDirectory(Folder); File.WriteAllText(AutoLearnFile, enabled ? "true" : "false"); }
     public static void RemoveLegacyBalanceKey()
     {
         var file = Path.Combine(Folder, "balance-key.bin");

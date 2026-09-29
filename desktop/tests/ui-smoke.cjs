@@ -3,7 +3,7 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const { safeStorage, clipboard } = require('electron');
 const { HistoryStore } = require('../history-store.cjs');
-exports.run = async ({ main, overlay, app, engineEvent, testOverlayActions }) => {
+exports.run = async ({ main, overlay, learning, app, engineEvent, testOverlayActions }) => {
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const evaluate = code => main.webContents.executeJavaScript(code);
   const directory = path.join(__dirname, '..', 'artifacts'); await fs.mkdir(directory, { recursive: true });
@@ -124,6 +124,24 @@ exports.run = async ({ main, overlay, app, engineEvent, testOverlayActions }) =>
   await evaluate('document.getElementById("dictionary-terms").value=""; document.getElementById("settings-form").requestSubmit(document.querySelector("[type=submit]"))');
   await wait(100);
   assert.deepEqual(await evaluate("window.whisper.call('initial').then(x => x.settings.dictionaryTerms)"), []);
+  const learningSettings = await evaluate("window.whisper.call('initial').then(x => x.settings)");
+  await evaluate('document.getElementById("dictionary-terms").value="Draft name"');
+  engineEvent({ type: 'dictionaryLearned', id: 'learned-test', term: 'Raikage', settings: { ...learningSettings, dictionaryTerms: ['Raikage'] } });
+  await wait(150);
+  assert.equal(await evaluate('document.getElementById("dictionary-terms").value'), 'Draft name\nRaikage');
+  assert.equal(learning.isVisible(), true);
+  assert.equal(await learning.webContents.executeJavaScript('document.querySelector(".term")?.textContent ?? "missing"'), 'Raikage');
+  await fs.writeFile(path.join(directory, 'learning-toast.png'), (await learning.webContents.capturePage()).toPNG());
+  await learning.webContents.executeJavaScript('document.querySelector("button").click()');
+  await wait(50);
+  assert.equal(await evaluate('document.getElementById("dictionary-terms").value'), 'Draft name');
+  engineEvent({ type: 'dictionaryLearned', id: 'learned-nano', term: 'NanoSight', settings: { ...learningSettings, dictionaryTerms: ['NanoSight'] } });
+  engineEvent({ type: 'dictionaryLearned', id: 'learned-aeris', term: 'Aeris', settings: { ...learningSettings, dictionaryTerms: ['NanoSight', 'Aeris'] } });
+  await wait(50);
+  assert.equal(await evaluate('document.getElementById("dictionary-terms").value'), 'Draft name\nNanoSight\nAeris');
+  await learning.webContents.executeJavaScript('Array.from(document.querySelectorAll("button")).find(button => button.getAttribute("aria-label") === "Undo NanoSight")?.click()');
+  await wait(50);
+  assert.equal(await evaluate('document.getElementById("dictionary-terms").value'), 'Draft name\nAeris');
   await evaluate('document.getElementById("dictionary-terms").value="Astra\\nExisting term"; document.getElementById("import-wispr").click()'); await wait(100);
   assert.deepEqual(await evaluate("window.whisper.call('initial').then(x => x.settings.dictionaryTerms)"), ['Astra', 'Existing term', 'Wispr Flow']);
   assert.equal(await evaluate('document.getElementById("import-wispr-status").textContent'), '1 new term imported. 3 snippets were skipped.');

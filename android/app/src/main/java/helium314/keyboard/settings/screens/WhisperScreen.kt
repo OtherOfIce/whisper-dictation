@@ -27,6 +27,7 @@ import helium314.keyboard.latin.utils.BackButton
 import helium314.keyboard.latin.utils.prefs
 import helium314.keyboard.latin.whisper.DictionaryLimits
 import helium314.keyboard.latin.whisper.SecureCredentialStore
+import helium314.keyboard.latin.whisper.WhisperManager
 import helium314.keyboard.settings.Setting
 import helium314.keyboard.settings.preferences.ListPreference
 
@@ -42,6 +43,9 @@ fun WhisperSettingsScreen(onClickBack: () -> Unit) {
     var keyError by remember { mutableStateOf<String?>(null) }
     var dictionary by remember { mutableStateOf(prefs.getString(Settings.PREF_WHISPER_DICTIONARY, "").orEmpty()) }
     var dictionaryError by remember { mutableStateOf<String?>(null) }
+    var failedRecordingPresent by remember { mutableStateOf(WhisperManager.failedRecording(context).isFile) }
+    var raceMai by remember { mutableStateOf(prefs.getBoolean(WhisperManager.PREF_RACE_MAI, true)) }
+    var lunaCleanup by remember { mutableStateOf(prefs.getBoolean(WhisperManager.PREF_LUNA_CLEANUP, false)) }
 
     Scaffold(topBar = { @OptIn(ExperimentalMaterial3Api::class) TopAppBar(
         title = { Text(stringResource(R.string.whisper_settings_title)) }, navigationIcon = { BackButton(onClickBack) })
@@ -69,6 +73,36 @@ fun WhisperSettingsScreen(onClickBack: () -> Unit) {
             LanguageSelector()
             Spacer(Modifier.height(12.dp))
             TranscriptionModelSelector()
+            Spacer(Modifier.height(12.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) {
+                    Text("Race two MAI requests", style = MaterialTheme.typography.titleSmall)
+                    Text("Use the first result. Both requests may be billed.", style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = raceMai, onCheckedChange = {
+                    raceMai = it
+                    prefs.edit { putBoolean(WhisperManager.PREF_RACE_MAI, it) }
+                })
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) {
+                    Text("Luna cleanup", style = MaterialTheme.typography.titleSmall)
+                    Text("Remove false starts and spoken corrections before insertion. Adds a request and may change wording.", style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = lunaCleanup, onCheckedChange = {
+                    lunaCleanup = it
+                    prefs.edit { putBoolean(WhisperManager.PREF_LUNA_CLEANUP, it) }
+                })
+            }
+            if (failedRecordingPresent) {
+                Spacer(Modifier.height(12.dp))
+                Text("A failed recording is saved on this device. Tap the microphone in a text field to retry it.")
+                TextButton(onClick = {
+                    WhisperManager.failedRecording(context).delete()
+                    failedRecordingPresent = false
+                }) { Text("Discard failed recording") }
+            }
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(
                 value = dictionary,

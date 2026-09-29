@@ -1,6 +1,6 @@
 # Learning from corrections
 
-Proposed, not implemented. This describes our design, not Wispr Flow's internals.
+An initial version is implemented. It captures up to 4,096 characters from a supported focused text field before paste, verifies that the expected text appears there, and polls the same field for up to 30 seconds of active focus, with a two-minute overall limit. It learns up to two independent word corrections, including corrections made one after another, skips password and unsupported fields, and offers Undo for each saved word in an app popup. It waits for a settled edit and replaces a provisional learned spelling if the user keeps correcting the same word. Brief app switches pause observation. Undo works while that app instance is running; after a restart, remove the term in Settings. The broader design below remains future work. This describes Local Whisper, not Wispr Flow's internals.
 
 ## Flow
 

@@ -6,6 +6,14 @@ namespace LocalWhisper;
 // Electron owns every visible window. This hidden Windows message pump serves the keyboard hook.
 internal sealed class EngineApp : ApplicationContext
 {
+    private static readonly string ProbeFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalWhisper");
+    private static readonly object ProbeLock = new();
+    private static void Probe(string stage)
+    {
+        if (!File.Exists(Path.Combine(ProbeFolder, "learning-probe.enabled"))) return;
+        try { lock (ProbeLock) File.AppendAllText(Path.Combine(ProbeFolder, "learning-probe.log"), $"{DateTime.UtcNow:O} {stage}{Environment.NewLine}"); }
+        catch { }
+    }
     private readonly Control dispatcher = new();
     private readonly GlobalShortcut? shortcut;
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 35 };
@@ -24,8 +32,10 @@ internal sealed class EngineApp : ApplicationContext
     private string apiKey = "", xaiApiKey = "", cleanupMode = CleanupService.Off, transcriptionModel = TranscriptionModels.MaiClean, entryId = "";
     private string? processingPhase;
     private string[] dictionaryTerms = [];
+    private readonly Dictionary<string, string> learnedEntries = new();
+    private CancellationTokenSource? correctionObservation;
     private nint target;
-    private bool liveChunks, doubleTranscription, lockMode = true, cancelled, exiting;
+    private bool liveChunks, doubleTranscription, lockMode = true, autoLearn = true, cancelled, exiting;
     private long lastTick = Environment.TickCount64, lastPublish;
 
     public EngineApp(bool noHook = false)
@@ -41,7 +51,7 @@ internal sealed class EngineApp : ApplicationContext
         });
         try { Settings.RemoveLegacyBalanceKey(); }
         catch { Notify("The old saved management key could not be removed. Delete balance-key.bin from LocalWhisper's local app data folder."); }
-        try { apiKey = Settings.LoadKey(); xaiApiKey = Settings.LoadXaiKey(); liveChunks = Settings.LiveChunks; doubleTranscription = Settings.DoubleTranscription; lockMode = Settings.LockMode; cleanupMode = Settings.CleanupMode; transcriptionModel = Settings.TranscriptionModel; dictionaryTerms = Settings.LoadDictionaryTerms(); }
+        try { apiKey = Settings.LoadKey(); xaiApiKey = Settings.LoadXaiKey(); liveChunks = Settings.LiveChunks; doubleTranscription = Settings.DoubleTranscription; lockMode = Settings.LockMode; autoLearn = Settings.AutoLearn; cleanupMode = Settings.CleanupMode; transcriptionModel = Settings.TranscriptionModel; dictionaryTerms = Settings.LoadDictionaryTerms(); }
         catch { Notify("Saved settings could not be read. Please open Settings."); }
         gesture = new Gesture(lockMode);
         if (!noHook)
@@ -83,7 +93,7 @@ internal sealed class EngineApp : ApplicationContext
             if (!exiting) dispatcher.BeginInvoke(ExitThread);
         });
     }
-    private object SettingsState() => new { hasKey = !string.IsNullOrWhiteSpace(apiKey), hasXaiKey = !string.IsNullOrWhiteSpace(xaiApiKey), liveChunks, doubleTranscription, lockMode, cleanupMode, transcriptionModel, dictionaryTerms };
+    private object SettingsState() => new { hasKey = !string.IsNullOrWhiteSpace(apiKey), hasXaiKey = !string.IsNullOrWhiteSpace(xaiApiKey), liveChunks, doubleTranscription, lockMode, autoLearn, cleanupMode, transcriptionModel, dictionaryTerms };
     private void Emit(object value) => output.Writer.TryWrite(value);
     private void Notify(string message) => Emit(new { type = "notice", message });
     private void PublishState() => Emit(new { type = "state", mode = cancelled || metrics?.Snapshot().PasteMs is not null ? "Idle" : gesture.Mode.ToString(), phase = processingPhase, level = recorder?.Level ?? 0, id = entryId, metrics = metrics?.Snapshot() });
@@ -124,17 +134,23 @@ internal sealed class EngineApp : ApplicationContext
                     if (values.TryGetProperty("liveChunks", out var live)) { liveChunks = live.GetBoolean(); Settings.SaveLiveChunks(liveChunks); }
                     if (values.TryGetProperty("doubleTranscription", out var doubled)) { doubleTranscription = doubled.GetBoolean(); Settings.SaveDoubleTranscription(doubleTranscription); }
                     if (values.TryGetProperty("lockMode", out var lockSetting)) { lockMode = lockSetting.GetBoolean(); Settings.SaveLockMode(lockMode); gesture.LockByDefault = lockMode; }
+                    if (values.TryGetProperty("autoLearn", out var learning)) { autoLearn = learning.GetBoolean(); Settings.SaveAutoLearn(autoLearn); if (!autoLearn) correctionObservation?.Cancel(); }
                     if (values.TryGetProperty("cleanupMode", out var cleanup)) { Settings.SaveCleanupMode(cleanup.GetString() ?? ""); cleanupMode = Settings.CleanupMode; }
                     if (values.TryGetProperty("transcriptionModel", out var model)) { Settings.SaveTranscriptionModel(model.GetString() ?? ""); transcriptionModel = Settings.TranscriptionModel; }
-                    Settings.SaveDictionaryTerms(nextDictionary); dictionaryTerms = nextDictionary;
+                    Settings.SaveDictionaryTerms(nextDictionary); dictionaryTerms = nextDictionary; learnedEntries.Clear();
                     result = SettingsState(); break;
                 case "saveDictionary":
                     if (gesture.Mode != CaptureMode.Idle) throw new InvalidOperationException("Finish recording before changing settings.");
                     var importedTerms = command.GetProperty("params").GetProperty("dictionaryTerms");
                     if (importedTerms.ValueKind != JsonValueKind.Array) throw new InvalidOperationException("Invalid dictionary.");
                     var importedDictionary = Vocabulary.Normalize(importedTerms.EnumerateArray().Select(term => term.GetString()));
-                    Settings.SaveDictionaryTerms(importedDictionary); dictionaryTerms = importedDictionary;
+                    Settings.SaveDictionaryTerms(importedDictionary); dictionaryTerms = importedDictionary; learnedEntries.Clear();
                     result = SettingsState(); break;
+                case "undoLearning":
+                    var learnedId = command.GetProperty("params").GetProperty("id").GetString() ?? "";
+                    result = RemoveLearned(learnedId);
+                    if ((bool)result) correctionObservation?.Cancel();
+                    break;
                 case "retranscribe":
                     result = await RetranscribeAsync(command.GetProperty("params").GetProperty("id").GetString() ?? "");
                     break;
@@ -161,6 +177,7 @@ internal sealed class EngineApp : ApplicationContext
         if (exiting) return;
         if (action == GestureAction.Start)
         {
+            correctionObservation?.Cancel(); correctionObservation = null;
             var grokStreaming = TranscriptionModels.IsStreaming(transcriptionModel);
             var effectiveCleanup = cleanupMode;
             if ((grokStreaming && string.IsNullOrWhiteSpace(xaiApiKey))
@@ -272,8 +289,28 @@ internal sealed class EngineApp : ApplicationContext
             using (trace.Measure("Paste / wait for released keys"))
             {
                 if (restoreTarget) Native.SetForegroundWindow(target);
-                if (await Paste.IntoAsync(text, target, cancellation.Token, () => { trace.Pasted(); PublishState(); }, trace, TargetContext.AcceptsTextAsync)) outcome = "Pasted";
-                else outcome = "Saved to history"; // Electron copies this transcript to the clipboard and shows the Copy action.
+                CorrectionLearning.Snapshot? snapshot = null;
+                if (autoLearn)
+                    try { snapshot = await CorrectionLearning.CaptureAsync(target, cancellation.Token, Probe); }
+                    catch (TimeoutException) { Probe("capture-timeout"); }
+                else Probe("learning-disabled");
+                if (await Paste.IntoAsync(text, target, cancellation.Token, () => { trace.Pasted(); PublishState(); }, trace, TargetContext.AcceptsTextAsync))
+                {
+                    outcome = "Pasted";
+                    Probe(snapshot is null ? "pasted-without-capture" : "pasted-with-capture");
+                    if (snapshot is not null && autoLearn)
+                    {
+                        correctionObservation = new CancellationTokenSource();
+                        var observation = correctionObservation;
+                        var learnedByIndex = new Dictionary<int, string>();
+                        CorrectionLearning.Observe(snapshot, text, observation.Token,
+                            update => { if (!exiting && !observation.IsCancellationRequested) dispatcher.BeginInvoke(() =>
+                            {
+                                if (!observation.IsCancellationRequested) ApplyCorrectionUpdate(update, learnedByIndex);
+                            }); }, Probe);
+                    }
+                }
+                else { outcome = "Saved to history"; Probe("paste-skipped"); } // Electron copies this transcript to the clipboard and shows the Copy action.
             }
         }
         catch (OperationCanceledException) { text = ""; outcome = cancellation.IsCancellationRequested ? "Cancelled" : "Timed out"; if (outcome == "Timed out") Notify("Transcription timed out. See the timing details in History."); }
@@ -292,6 +329,38 @@ internal sealed class EngineApp : ApplicationContext
                 _ = UpdateCompletedMetricsAsync(id, trace);
             }
         }
+    }
+    private void ApplyCorrectionUpdate(CorrectionLearning.CorrectionUpdate update, Dictionary<int, string> learnedByIndex)
+    {
+        if (exiting || !autoLearn) return;
+        if (learnedByIndex.Remove(update.Index, out var priorId)) RemoveLearned(priorId);
+        if (update.Term is { } term && Learn(term) is { } id) learnedByIndex[update.Index] = id;
+    }
+    private bool RemoveLearned(string id)
+    {
+        if (!learnedEntries.TryGetValue(id, out var term)) return false;
+        if (!dictionaryTerms.Contains(term, StringComparer.Ordinal)) { learnedEntries.Remove(id); return false; }
+        var next = dictionaryTerms.Where(item => !string.Equals(item, term, StringComparison.Ordinal)).ToArray();
+        Settings.SaveDictionaryTerms(next); dictionaryTerms = next; learnedEntries.Remove(id);
+        Emit(new { type = "dictionaryLearningUndone", term, settings = SettingsState() });
+        return true;
+    }
+    private string? Learn(string term)
+    {
+        if (exiting || !autoLearn || dictionaryTerms.Contains(term, StringComparer.OrdinalIgnoreCase)) { Probe("learn-skipped"); return null; }
+        try
+        {
+            var next = Vocabulary.Normalize([.. dictionaryTerms, term]);
+            if (TranscriptionModels.IsStreaming(transcriptionModel)) XaiTranscription.ValidateKeyterms(next);
+            Settings.SaveDictionaryTerms(next);
+            dictionaryTerms = next;
+            var id = Guid.NewGuid().ToString("N");
+            learnedEntries[id] = term;
+            Probe("learn-saved");
+            Emit(new { type = "dictionaryLearned", id, term, settings = SettingsState() });
+            return id;
+        }
+        catch (Exception) { Probe("learn-error"); Notify("Could not save the learned word. Check your dictionary in Settings."); return null; }
     }
     private ModelTranscription CreateModelTranscription(SessionMetrics trace, IReadOnlyList<string> dictionary)
     {
@@ -412,7 +481,7 @@ internal sealed class EngineApp : ApplicationContext
     protected override void ExitThreadCore()
     {
         if (exiting) return;
-        exiting = true; timer.Stop(); timer.Dispose(); shortcut?.Dispose(); operation?.Cancel(); recorder?.Dispose();
+        exiting = true; correctionObservation?.Cancel(); timer.Stop(); timer.Dispose(); shortcut?.Dispose(); operation?.Cancel(); recorder?.Dispose();
         dispatcher.Dispose(); http.Dispose(); output.Writer.TryComplete(); base.ExitThreadCore();
     }
 }

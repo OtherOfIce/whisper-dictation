@@ -1,5 +1,55 @@
 # Whisper Large V3 Turbo (via Groq) latency benchmark
 
+## Rerun on 2026-09-28: request-level Groq pin was ignored
+
+The 30 reviewed clips were rerun with `--provider groq`, `--language en`, and
+parallelism 2. All 30 requests succeeded. Micro-WER was **11.29%** (96 errors
+across 850 reference words), with 13/30 exact clips. Median request latency was
+1,517 ms, p90 was 2,819 ms, and reported cost was $0.001668.
+
+OpenRouter's [transcription routing guide](https://openrouter.ai/blog/tutorials/transcription-on-openrouter/)
+says `provider.order` and `allow_fallbacks` do not apply to this endpoint. A
+single-clip probe with `--provider does-not-exist` still succeeded, confirming
+the evaluator's provider hint was ignored. In the full run, 28 charges matched
+DeepInfra's per-second price and two matched Groq's 10-second minimum charge.
+The provider counts are inferred from billing. This run is **not** a Groq-only
+benchmark. OpenRouter's [guardrails](https://openrouter.ai/docs/guides/features/guardrails/overview)
+document a Groq-only provider allowlist for an API key. The docs describe it
+as applying broadly, but do not confirm transcription specifically. It must
+pass a one-clip provider check before treating it as an OpenRouter-billed pin.
+The evaluator can now use a separate `OPENROUTER_BENCHMARK_KEY` and checks the
+actual provider through OpenRouter generation metadata when passed
+`--require-provider groq`. Verify a single clip before the full suite.
+
+An additional live probe sent the full proposed routing object:
+`{ "order": ["groq"], "only": ["groq"], "allow_fallbacks": false }`.
+OpenRouter accepted the transcription request, but its generation metadata
+reported **DeepInfra**. A negative control with `does-not-exist` in both
+`order` and `only` also succeeded through DeepInfra. These are direct provider
+checks, rather than inferences from cost. The failed verification reports are
+`artifacts/transcribe-eval-exact-pin-groq-probe-20260928.json` and
+`artifacts/transcribe-eval-exact-pin-negative-control-20260928.json`.
+
+The new result is worse than the 2026-09-17 parallelism-2 run below (6.71%
+micro-WER, 616 ms median). Different provider routing makes the two runs an
+unreliable measure of model changes.
+
+Private reports: `artifacts/transcribe-eval-normal-turbo-groq-attempt-20260928.json`
+and `artifacts/transcribe-eval-turbo-invalid-provider-probe-20260928.json`.
+
+```powershell
+dotnet run --project tools/transcribe-eval/TranscribeEval.csproj -c Release -- --source artifacts/wispr-corpus/normal --model openai/whisper-large-v3-turbo --provider groq --language en --parallelism 2 --output artifacts/transcribe-eval-normal-turbo-groq-attempt-20260928.json
+```
+
+The candidate Groq-only command, after assigning a Groq-only guardrail to the
+benchmark key and verifying one clip, is:
+
+```powershell
+dotnet run --project tools/transcribe-eval/TranscribeEval.csproj -c Release -- --source artifacts/wispr-corpus/normal --model openai/whisper-large-v3-turbo --language en --require-provider groq --parallelism 2 --output artifacts/transcribe-eval-normal-turbo-groq-guardrail.json
+```
+
+## Earlier run on 2026-09-17
+
 Run on 2026-09-17 against the 30 reviewed clips in `artifacts/wispr-corpus/normal`
 (438.688 seconds, 850 reference words). Model: `openai/whisper-large-v3-turbo`
 with `language: "en"`, MP3 uploads, and the per-clip dictionary sent as both
@@ -48,10 +98,9 @@ fillers MAI clean removes.
 - Best observed sync latency on OpenRouter for short dictation remains a
   Groq-served Whisper Turbo request (~400–700 ms), marginally beating MAI's
   ~530 ms median — but the app cannot pin routing, so p90 is multi-second.
-- If OpenRouter ever honors STT provider pinning (or with a direct Groq
-  integration per `docs/groq-latency-research.md`), Turbo + strict Groq is
-  the "how fast can we go" answer. Until then it is a latency gamble with a
-  clear accuracy cost on domain terms.
+- A Groq-only OpenRouter key guardrail is needed to test Turbo's strict Groq
+  latency and accuracy. The request-level `--provider` flag cannot establish
+  those figures.
 
 Reports are gitignored (contain reference and model transcripts):
 

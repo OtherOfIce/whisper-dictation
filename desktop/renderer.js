@@ -230,6 +230,7 @@ function renderSettings(settings) {
   $('live-chunks').checked = !!settings.liveChunks;
   $('double-transcription').checked = !!settings.doubleTranscription;
   $('lock-mode').checked = settings.lockMode !== false;
+  $('auto-learn').checked = settings.autoLearn !== false;
   $('transcription-model').value = settings.transcriptionModel || 'mai-transcribe-2-clean';
   $('cleanup-mode').value = settings.cleanupMode || 'off';
   $('dictionary-terms').value = Array.isArray(settings.dictionaryTerms) ? settings.dictionaryTerms.join('\n') : '';
@@ -280,7 +281,7 @@ $('settings-form').onsubmit = async event => {
   event.preventDefault(); const button = event.submitter; button.disabled = true;
   try {
     const dictionaryTerms = $('dictionary-terms').value.split(/\r?\n/).map(term => term.trim()).filter(Boolean);
-    const settings = await call('saveSettings', { apiKey: $('api-key').value, xaiApiKey: $('xai-api-key').value, liveChunks: $('live-chunks').checked, doubleTranscription: $('double-transcription').checked, lockMode: $('lock-mode').checked, transcriptionModel: $('transcription-model').value, cleanupMode: $('cleanup-mode').value, dictionaryTerms });
+    const settings = await call('saveSettings', { apiKey: $('api-key').value, xaiApiKey: $('xai-api-key').value, liveChunks: $('live-chunks').checked, doubleTranscription: $('double-transcription').checked, lockMode: $('lock-mode').checked, autoLearn: $('auto-learn').checked, transcriptionModel: $('transcription-model').value, cleanupMode: $('cleanup-mode').value, dictionaryTerms });
     $('api-key').value = ''; $('xai-api-key').value = '';
     renderSettings(settings); $('save-message').textContent = 'Settings saved';
   } catch (error) { toast(error.message); } finally { button.disabled = false; }
@@ -394,6 +395,23 @@ window.whisper.onEvent(event => {
   if (event.type === 'balance') renderBalance(event.balance);
   if (event.type === 'balanceError') { $('balance-detail').textContent = latestBalance ? 'Refresh failed. Showing the last known balance.' : 'Balance unavailable. Try refreshing.'; }
   if (event.type === 'settings' || event.type === 'ready') renderSettings(event.settings);
+  if (event.type === 'dictionaryLearned') {
+    currentSettings = event.settings;
+    const field = $('dictionary-terms');
+    const terms = field.value.split(/\r?\n/).map(term => term.trim());
+    if (!terms.some(term => term.toLocaleLowerCase() === event.term.toLocaleLowerCase())) {
+      const start = field.selectionStart, end = field.selectionEnd;
+      field.value += (field.value.trim() ? '\n' : '') + event.term;
+      field.setSelectionRange(start, end);
+    }
+  }
+  if (event.type === 'dictionaryLearningUndone') {
+    currentSettings = event.settings;
+    const field = $('dictionary-terms');
+    const start = field.selectionStart, end = field.selectionEnd;
+    field.value = field.value.split(/\r?\n/).filter(term => term.trim() !== event.term).join('\n');
+    field.setSelectionRange(Math.min(start, field.value.length), Math.min(end, field.value.length));
+  }
   if (event.type === 'ready') { document.querySelector('.engine-dot').classList.add('connected'); document.querySelector('.engine-dot').title = 'Ready to dictate'; }
   if (event.type === 'engineOffline') { document.querySelector('.engine-dot').classList.remove('connected'); document.querySelector('.engine-dot').title = 'Engine offline. Restart the app.'; }
   if (event.type === 'navigate') navigate(event.view);
