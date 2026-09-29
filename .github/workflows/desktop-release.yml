@@ -79,10 +79,18 @@ jobs:
             throw 'The draft release is missing the installer or update metadata.'
           }
 
-          $notes = gh api --method POST "repos/$env:GITHUB_REPOSITORY/releases/generate-notes" -f "tag_name=$tag" -f "target_commitish=$env:GITHUB_SHA" --jq '.body'
-          if ($LASTEXITCODE -ne 0) { throw 'Could not generate release notes.' }
+          $previousTag = gh release list --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not find the previous release.' }
+          if ($previousTag) {
+            $comparePath = 'repos/{0}/compare/{1}...{2}' -f $env:GITHUB_REPOSITORY, $previousTag.Trim(), $env:GITHUB_SHA
+            $commits = @(gh api $comparePath --paginate --jq '.commits[] | .commit.message | split("\n")[0]')
+            if ($LASTEXITCODE -ne 0) { throw 'Could not list changes since the previous release.' }
+            $notes = @("Changes since $previousTag", '') + @($commits | ForEach-Object { "- $_" })
+          } else {
+            $notes = @('Initial Windows installer and automatic updates.', '', "- $env:GITHUB_SHA")
+          }
           $notesPath = Join-Path $env:RUNNER_TEMP 'desktop-release-notes.md'
-          Set-Content -LiteralPath $notesPath -Value $notes -Encoding utf8
+          Set-Content -LiteralPath $notesPath -Value ($notes -join "`n") -Encoding utf8
           $latest = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha'
           if ($LASTEXITCODE -ne 0) { throw 'Could not recheck the main branch.' }
           if ($latest.Trim() -ne $env:GITHUB_SHA) {
