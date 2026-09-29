@@ -8,6 +8,8 @@ artifacts/
 .vs/
 *.user
 .env
+.env.local
+sync/convex/_generated/
 local.properties
 *.jks
 *.keystore

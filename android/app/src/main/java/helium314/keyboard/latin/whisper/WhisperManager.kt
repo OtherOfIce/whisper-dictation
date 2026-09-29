@@ -24,6 +24,11 @@ class WhisperManager(private val context: Context) {
     private val client = OpenRouterClient()
     private val credentials = SecureCredentialStore(context)
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    init {
+        scope.launch {
+            while (isActive) { DictionarySync.sync(context.applicationContext); delay(60_000) }
+        }
+    }
     private var job: Job? = null
     private var recordingFile: File? = null
     private val failedRecording = File(context.noBackupFilesDir, "failed-dictation.wav")

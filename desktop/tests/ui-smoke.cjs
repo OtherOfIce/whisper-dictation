@@ -107,6 +107,14 @@ exports.run = async ({ main, overlay, learning, app, engineEvent, testOverlayAct
   assert.equal(await evaluate('document.getElementById("transcription-model").value'), 'mai-transcribe-2-clean');
   assert.equal(await evaluate('document.getElementById("cleanup-mode").value'), 'off');
   assert.equal(await evaluate('document.getElementById("dictionary-terms").value'), '');
+  assert.equal(await evaluate('document.getElementById("sync-status").textContent'), 'Sync is off');
+  assert.equal(await evaluate('document.getElementById("sync-now").disabled'), true);
+  await evaluate('document.getElementById("dictionary-terms").value="Draft term"');
+  engineEvent({ type: 'dictionarySynced', settings: { ...(await evaluate("window.whisper.call('initial').then(x => x.settings)")), dictionaryTerms: ['Phone term'] } });
+  await wait(100);
+  assert.equal(await evaluate('document.getElementById("dictionary-terms").value'), 'Phone term\nDraft term');
+  engineEvent({ type: 'settings', settings: await evaluate("window.whisper.call('initial').then(x => x.settings)") });
+  await wait(100);
   await evaluate(`document.getElementById('xai-api-key').value='xai-test-only'; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))`);
   await wait(100);
   assert.equal(await evaluate('document.getElementById("xai-api-key").value'), '');

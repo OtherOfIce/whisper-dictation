@@ -141,10 +141,15 @@ internal sealed class EngineApp : ApplicationContext
                     result = SettingsState(); break;
                 case "saveDictionary":
                     if (gesture.Mode != CaptureMode.Idle) throw new InvalidOperationException("Finish recording before changing settings.");
-                    var importedTerms = command.GetProperty("params").GetProperty("dictionaryTerms");
+                    var dictionaryParams = command.GetProperty("params");
+                    if (dictionaryParams.TryGetProperty("expectedDictionaryTerms", out var expectedTerms) &&
+                        !dictionaryTerms.SequenceEqual(expectedTerms.EnumerateArray().Select(term => term.GetString())))
+                        throw new InvalidOperationException("Dictionary changed during sync. Sync will retry.");
+                    var importedTerms = dictionaryParams.GetProperty("dictionaryTerms");
                     if (importedTerms.ValueKind != JsonValueKind.Array) throw new InvalidOperationException("Invalid dictionary.");
                     var importedDictionary = Vocabulary.Normalize(importedTerms.EnumerateArray().Select(term => term.GetString()));
-                    Settings.SaveDictionaryTerms(importedDictionary); dictionaryTerms = importedDictionary; learnedEntries.Clear();
+                    Settings.SaveDictionaryTerms(importedDictionary); dictionaryTerms = importedDictionary;
+                    if (!dictionaryParams.TryGetProperty("preserveLearning", out var preserveLearning) || !preserveLearning.GetBoolean()) learnedEntries.Clear();
                     result = SettingsState(); break;
                 case "undoLearning":
                     var learnedId = command.GetProperty("params").GetProperty("id").GetString() ?? "";

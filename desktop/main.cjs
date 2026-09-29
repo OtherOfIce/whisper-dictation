@@ -10,6 +10,7 @@ const { HistoryStore } = require('./history-store.cjs');
 const { getWordStats, getDisplayedCostStats } = require('./stats.cjs');
 const { readWisprDictionary } = require('./wispr-dictionary.cjs');
 const { startAutoUpdates } = require('./updater.cjs');
+const { DictionarySync } = require('./dictionary-sync.cjs');
 const testMode = process.argv.includes('--ui-test');
 const startupMode = process.argv.includes('--startup');
 app.setName('Local Whisper');
@@ -25,6 +26,17 @@ else {
   const historyPath = () => path.join(app.getPath('userData'), 'history.sqlite');
   const historyStore = new HistoryStore(historyPath(), safeStorage, path.join(app.getPath('userData'), 'history.bin'));
   const broadcast = value => { for (const win of [main, overlay]) if (win && !win.isDestroyed()) win.webContents.send('event', value); };
+  const dictionarySync = new DictionarySync({
+    file: path.join(app.getPath('userData'), 'dictionary-sync.bin'), crypto: safeStorage,
+    readTerms: () => settings.dictionaryTerms || [],
+    writeTerms: async dictionaryTerms => {
+      if (state.mode !== 'Idle') throw new Error('Finish recording to receive dictionary changes');
+      if (settings.transcriptionModel === 'grok-voice-transcribe-2-streaming' && (dictionaryTerms.length > 100 || dictionaryTerms.some(term => term.length > 50))) throw new Error('Cloud dictionary exceeds Grok limits. Choose another transcription model to receive it');
+      settings = testMode ? { ...settings, dictionaryTerms } : await send('saveDictionary', { dictionaryTerms, preserveLearning: true, expectedDictionaryTerms: settings.dictionaryTerms || [] });
+      broadcast({ type: 'dictionarySynced', settings });
+    },
+    onStatus: sync => broadcast({ type: 'dictionarySyncStatus', sync })
+  });
   function send(method, params = {}, timeoutMs = 16000) {
     return new Promise((resolve, reject) => {
       if (!engine || engine.killed || !engine.stdin.writable) return reject(new Error('Dictation engine is unavailable. Restart the app.'));
@@ -109,16 +121,18 @@ else {
       if (request) { clearTimeout(request.timeout); pending.delete(event.id); event.error ? request.reject(new Error(event.error)) : request.resolve(event.result); }
       return;
     }
-    if (event.type === 'ready') { settings = event.settings; refreshCredits(); }
+    if (event.type === 'ready') { settings = event.settings; refreshCredits(); dictionarySync.sync(); }
     if (event.type === 'settings') settings = event.settings;
     if (event.type === 'dictionaryLearned') {
       settings = event.settings;
+      dictionarySync.sync();
       broadcast({ type: 'dictionaryLearned', term: event.term, settings });
       showLearningToast(event.id, event.term);
       return;
     }
     if (event.type === 'dictionaryLearningUndone') {
       settings = event.settings;
+      dictionarySync.sync();
       for (const [id, term] of learningToasts) if (term === event.term) learningToasts.delete(id);
       learning.webContents.send('event', { type: 'dictionaryLearningUndone', term: event.term });
     }
@@ -232,7 +246,13 @@ else {
       return send(method, method === 'finish' ? { fromOverlay: true } : {});
     }
     switch (method) {
-      case 'initial': return { history, settings, balance, state, historyError, stats: getWordStats(history), costs: currentCosts() };
+      case 'initial': return { history, settings, balance, state, historyError, dictionarySync: dictionarySync.status(), stats: getWordStats(history), costs: currentCosts() };
+      case 'configureDictionarySync': {
+        if (typeof params.url !== 'string' || typeof params.key !== 'string') throw new Error('Invalid sync settings.');
+        await dictionarySync.configure(params.url.trim(), params.key.trim());
+        return dictionarySync.sync();
+      }
+      case 'syncDictionary': return dictionarySync.sync();
       case 'refreshCredits': return refreshCredits();
       case 'importOpenRouterActivity': {
         if (!params || typeof params.managementKey !== 'string' || !params.managementKey.trim() || params.managementKey.length > 1024)
@@ -258,7 +278,7 @@ else {
         validateDictionaryTerms(params.dictionaryTerms);
         if (params.transcriptionModel === 'grok-voice-transcribe-2-streaming' && (params.dictionaryTerms.length > 100 || params.dictionaryTerms.some(term => term.length > 50))) throw new Error('Grok streaming accepts up to 100 dictionary terms of 50 characters each.');
         settings = testMode ? { ...settings, hasXaiKey: settings.hasXaiKey || !!params.xaiApiKey, liveChunks: params.liveChunks, doubleTranscription: params.doubleTranscription, lockMode: params.lockMode, autoLearn: params.autoLearn, transcriptionModel: params.transcriptionModel, cleanupMode: params.cleanupMode, dictionaryTerms: params.dictionaryTerms } : await send('saveSettings', params);
-        broadcast({ type: 'settings', settings }); refreshCredits(); return settings;
+        broadcast({ type: 'settings', settings }); refreshCredits(); dictionarySync.sync(); return settings;
       }
       case 'importWisprDictionary': {
         validateDictionaryTerms(params.dictionaryTerms);
@@ -268,6 +288,7 @@ else {
         const before = new Set(params.dictionaryTerms.map(term => term.trim().toLocaleLowerCase()).filter(Boolean)).size;
         const dictionaryTerms = mergeDictionaryTerms(params.dictionaryTerms, imported.terms);
         settings = testMode ? { ...settings, dictionaryTerms } : await send('saveDictionary', { dictionaryTerms });
+        dictionarySync.sync();
         return { settings, added: dictionaryTerms.length - before, ...imported };
       }
       case 'copy': {
@@ -366,6 +387,7 @@ else {
     });
   });
   app.whenReady().then(async () => {
+    if (!testMode) await dictionarySync.load();
     if (!testMode) {
       try { history = await historyStore.read(); costLedger = await historyStore.readCostLedger(); }
       catch { historyError = true; }
@@ -388,6 +410,7 @@ else {
       updateTrayMenu();
       tray.on('double-click', () => showMain());
       startEngine();
+      setInterval(() => { if (state.mode === 'Idle') dictionarySync.sync(); }, 60000).unref();
       startAutoUpdates(app, version => {
         if (updateReadyVersion === version) return;
         updateReadyVersion = version;

@@ -248,6 +248,24 @@ function updateModelSettings() {
   $('cleanup-note').textContent = 'Adds a separate OpenRouter request before pasting. To fit the insertion, Luna also receives up to 500 nearby characters from the focused text field; password fields are excluded. Fast uses priority processing at twice the token price. If cleanup fails, the original transcript is used.';
 }
 $('transcription-model').onchange = updateModelSettings;
+let currentSync;
+function renderSync(sync, updateConnection = false) {
+  currentSync = sync;
+  if (updateConnection) $('sync-url').value = sync.url || '';
+  $('sync-status').textContent = sync.message;
+  $('sync-now').disabled = !sync.connected;
+  $('disconnect-sync').disabled = !sync.connected;
+}
+for (const id of ['connect-sync', 'sync-now', 'disconnect-sync']) $(id).onclick = async () => {
+  const button = $(id); button.disabled = true;
+  try {
+    const sync = id === 'sync-now' ? await call('syncDictionary') : await call('configureDictionarySync', {
+      url: id === 'disconnect-sync' ? '' : $('sync-url').value,
+      key: id === 'disconnect-sync' ? '' : $('sync-key').value
+    });
+    $('sync-key').value = ''; renderSync(sync, true);
+  } catch (error) { toast(error.message); } finally { if (currentSync) renderSync(currentSync); $('connect-sync').disabled = false; }
+};
 $('lock-mode').onchange = async () => {
   const checkbox = $('lock-mode'); const nextValue = checkbox.checked; checkbox.disabled = true;
   try {
@@ -395,6 +413,16 @@ window.whisper.onEvent(event => {
   if (event.type === 'balance') renderBalance(event.balance);
   if (event.type === 'balanceError') { $('balance-detail').textContent = latestBalance ? 'Refresh failed. Showing the last known balance.' : 'Balance unavailable. Try refreshing.'; }
   if (event.type === 'settings' || event.type === 'ready') renderSettings(event.settings);
+  if (event.type === 'dictionarySyncStatus') renderSync(event.sync);
+  if (event.type === 'dictionarySynced') {
+    const previous = new Map((currentSettings.dictionaryTerms || []).map(term => [term.toLowerCase(), term]));
+    const draft = new Map($('dictionary-terms').value.split(/\r?\n/).map(term => term.trim()).filter(Boolean).map(term => [term.toLowerCase(), term]));
+    const merged = new Map(event.settings.dictionaryTerms.map(term => [term.toLowerCase(), term]));
+    for (const key of previous.keys()) if (!draft.has(key)) merged.delete(key);
+    for (const [key, term] of draft) if (previous.get(key) !== term) merged.set(key, term);
+    $('dictionary-terms').value = [...merged.values()].join('\n');
+    currentSettings = event.settings;
+  }
   if (event.type === 'dictionaryLearned') {
     currentSettings = event.settings;
     const field = $('dictionary-terms');
@@ -418,6 +446,7 @@ window.whisper.onEvent(event => {
   if (event.type === 'notice') toast(event.message);
 });
 call('initial').then(initial => {
+  renderSync(initial.dictionarySync, true);
   history = initial.history; renderHistory(); renderWordStats(initial.stats); renderCosts(initial.costs); renderSettings(initial.settings); renderBalance(initial.balance);
   if (initial.historyError) toast('Saved history could not be read. The existing file has been left untouched.');
 }).catch(error => toast(error.message));

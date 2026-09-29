@@ -1,0 +1,13 @@
+{
+  "name": "local-whisper-sync",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "convex dev",
+    "deploy": "convex deploy",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "convex": "1.46.0"
+  }
+}

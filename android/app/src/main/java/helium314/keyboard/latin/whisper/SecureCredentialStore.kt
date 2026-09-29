@@ -13,8 +13,8 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-class SecureCredentialStore(private val context: Context) {
-    private val alias = "local_whisper_openrouter_key"
+class SecureCredentialStore(private val context: Context, private val name: String = "openrouter") {
+    private val alias = "local_whisper_${name}_key"
     fun isAvailable(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && isUserUnlocked()
     fun hasKey(): Boolean = !load().isNullOrBlank()
 
@@ -55,7 +55,7 @@ class SecureCredentialStore(private val context: Context) {
 
     private fun credentialFile(): File {
         check(isUserUnlocked())
-        return File(context.noBackupFilesDir, "openrouter-key.enc")
+        return File(context.noBackupFilesDir, "$name-key.enc")
     }
 
     private fun key(): SecretKey {
