@@ -1,7 +1,7 @@
 {
   "name": "local-whisper-desktop",
   "productName": "Local Whisper",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Low-latency Windows dictation",
   "main": "main.cjs",
@@ -10,7 +10,51 @@
     "test": "node --test tests/*.test.cjs",
     "test:ui": "node launch.cjs --ui-test",
     "test:engine": "node tests/engine-smoke.cjs",
-    "package": "electron-packager . LocalWhisper --platform=win32 --arch=x64 --out=../dist/electron --overwrite --asar --icon=assets/app.ico --extra-resource=../dist/engine --ignore=^/tests --ignore=^/artifacts"
+    "package": "electron-packager . LocalWhisper --platform=win32 --arch=x64 --out=../dist/electron --overwrite --asar --icon=assets/app.ico --extra-resource=../dist/engine --ignore=^/tests --ignore=^/artifacts",
+    "package:installer": "electron-builder --win nsis --x64"
   },
-  "devDependencies": { "electron": "44.3.0", "@electron/packager": "20.3.0" }
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "44.3.0",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
+  "build": {
+    "appId": "org.otherofice.whisperdictation",
+    "asar": true,
+    "directories": {
+      "output": "../dist/installer"
+    },
+    "files": [
+      "**/*",
+      "!tests/**",
+      "!artifacts/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist/engine",
+        "to": "engine"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/app.ico",
+      "executableName": "LocalWhisper",
+      "artifactName": "LocalWhisper-Setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "OtherOfIce",
+      "repo": "whisper-dictation",
+      "releaseType": "draft"
+    }
+  }
 }

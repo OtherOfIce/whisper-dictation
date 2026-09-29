@@ -4,7 +4,9 @@ OpenRouter-powered dictation for Windows and Android. The desktop app uses an El
 
 ## Windows desktop
 
-Run `dist/electron/LocalWhisper-win32-x64/LocalWhisper.exe`. Your existing OpenRouter key is reused automatically.
+Install the [latest Windows release](https://github.com/OtherOfIce/whisper-dictation/releases/latest/download/LocalWhisper-Setup.exe). Your existing OpenRouter key is reused automatically. Installed copies check for updates after launch and every six hours. A downloaded update installs when you quit Local Whisper from the tray, after history has been saved.
+
+The first installer must be run manually if you currently use the unpacked `dist/electron/LocalWhisper-win32-x64/LocalWhisper.exe`. It keeps the same app name and user data location, so your settings and history remain available. Development runs and unpacked builds do not check for updates.
 
 - Press Ctrl + Win to speak. Recordings start in lock mode by default, so press the shortcut again to finish.
 - Turn off Default to lock mode in Settings to use push-to-talk mode. Hold Ctrl + Win to speak and release to insert. Double-tap the shortcut to switch that recording to lock mode. Escape discards a recording.
@@ -42,7 +44,12 @@ npm test
 npm run test:ui
 npm run test:engine
 npm run package
+npm run package:installer
 ```
+
+Every push to `main` runs the Windows release workflow. After tests pass, it builds the .NET engine and NSIS installer, assigns version `0.4.<workflow run number>`, and publishes a GitHub Release with update metadata and generated change notes. Version numbers do not need manual edits. The installer is in `dist/installer/` when built locally; local builds do not publish releases.
+
+Windows builds are currently unsigned, so Windows may warn before the first installation. A code signing certificate can remove that friction later.
 
 To stop old project builds, rebuild everything, and launch the packaged Windows app in one step, run `.	oolsuild-windows.ps1` from the repository root.
 

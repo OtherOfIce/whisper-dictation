@@ -9,6 +9,7 @@ const { projectTimings } = require('./model.cjs');
 const { HistoryStore } = require('./history-store.cjs');
 const { getWordStats, getDisplayedCostStats } = require('./stats.cjs');
 const { readWisprDictionary } = require('./wispr-dictionary.cjs');
+const { startAutoUpdates } = require('./updater.cjs');
 const testMode = process.argv.includes('--ui-test');
 const startupMode = process.argv.includes('--startup');
 app.setName('Local Whisper');
@@ -17,7 +18,7 @@ if (!app.requestSingleInstanceLock()) { app.quit(); }
 else {
   let main, overlay, tray, engine, quitting = false, state = { mode: 'Idle' }, history = [], historyError = false;
   const testOverlayActions = [];
-  let nextId = 0, settings = {}, balance = null, costLedger = null, refreshPromise, saveQueue = Promise.resolve();
+  let nextId = 0, settings = {}, balance = null, costLedger = null, refreshPromise, saveQueue = Promise.resolve(), updateReadyVersion = null;
   const pending = new Map();
   const currentCosts = () => getDisplayedCostStats(history, costLedger);
   const historyPath = () => path.join(app.getPath('userData'), 'history.sqlite');
@@ -57,6 +58,7 @@ else {
       { type: 'separator' },
       { label: 'Copy last transcript', enabled: hasTranscript, click: () => { try { copyLatest(); broadcast({ type: 'notice', message: 'Last transcript copied' }); } catch {} } },
       { type: 'separator' },
+      ...(updateReadyVersion ? [{ label: `Update ${updateReadyVersion} ready · Quit to install`, click: () => app.quit() }] : []),
       { label: 'Quit', click: () => app.quit() }
     ]));
   }
@@ -349,6 +351,12 @@ else {
       updateTrayMenu();
       tray.on('double-click', () => showMain());
       startEngine();
+      startAutoUpdates(app, version => {
+        if (updateReadyVersion === version) return;
+        updateReadyVersion = version;
+        updateTrayMenu();
+        notify(`Update ${version} is ready. Quit Local Whisper to install it.`);
+      });
       setInterval(() => { if (main.isVisible()) { refreshCredits(); broadcast({ type: 'stats', stats: getWordStats(history), costs: currentCosts() }); } }, 60000).unref();
     }
     if (!startupMode) main.show();
