@@ -20,9 +20,10 @@ internal sealed class Recorder : IDisposable
     public double Seconds { get { lock (gate) return totalBytes / 32000d; } }
     public bool HasStopped => stopped.Task.IsCompleted;
     public Recorder(bool live = false) : this(live ? RecorderMode.AtPauses : RecorderMode.AtStop) { }
-    public Recorder(RecorderMode mode)
+    public Recorder(RecorderMode mode, int deviceNumber = -1)
     {
         this.mode = mode;
+        input.DeviceNumber = deviceNumber;
         input.DataAvailable += (_, e) =>
         {
             byte[]? chunk = null;

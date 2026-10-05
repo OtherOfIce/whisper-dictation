@@ -11,7 +11,10 @@ public sealed record FallbackEvent(string Model, string Error);
 public sealed record MetricsSnapshot(DateTime Started, string Outcome, double AudioSeconds, long AudioBytes, long RequestBytes,
     double ElapsedMs, double? StopMs, double? PasteMs, double MaxUiGapMs, TimingRow[] Rows, CostRow[] Costs, HedgeEvent[] Hedges,
     string TranscriptionModel, string CleanupMode, string RequestedTranscriptionModel, FallbackEvent[] Fallbacks,
-    ParallelRequestEvent[] ParallelRequests, RequestEvent[] Requests);
+    ParallelRequestEvent[] ParallelRequests, RequestEvent[] Requests)
+{
+    public double? FirstTranscriptMs { get; init; }
+}
 
 public sealed class SessionMetrics
 {
@@ -26,6 +29,7 @@ public sealed class SessionMetrics
     private readonly List<Task> background = [];
     private readonly DateTime started = DateTime.Now;
     private double? stopMs, pasteMs;
+    private double? firstTranscriptMs;
     private double audioSeconds, maxUiGap;
     private long audioBytes;
     private long requestBytes;
@@ -49,6 +53,7 @@ public sealed class SessionMetrics
         lock (gate) costs.Add(new(category, model, value));
     }
     public void Stopped() { lock (gate) { stopMs ??= ElapsedMs; outcome = "Transcribing"; } }
+    public void FirstTranscript() { lock (gate) firstTranscriptMs ??= ElapsedMs; }
     public void Hedge(double cutoffMs, int winnerAttempt, double winnerMs, double? loserMs, double? savedMs)
     {
         lock (gate) hedges.Add(new(cutoffMs, winnerAttempt, winnerMs, loserMs, savedMs));
@@ -79,7 +84,7 @@ public sealed class SessionMetrics
         lock (gate) return new(started, outcome, audioSeconds, audioBytes, requestBytes,
             Math.Max(finishedMs ?? ElapsedMs, stages.Count == 0 ? 0 : stages.Max(s => s.End ?? ElapsedMs)), stopMs, pasteMs, maxUiGap,
             stages.Select(s => new TimingRow(s.Name, s.Start, (s.End ?? ElapsedMs) - s.Start, s.End is null)).ToArray(), costs.ToArray(), hedges.ToArray(),
-            TranscriptionModel, CleanupMode, RequestedTranscriptionModel, fallbacks.ToArray(), parallelRequests.ToArray(), requests.ToArray());
+            TranscriptionModel, CleanupMode, RequestedTranscriptionModel, fallbacks.ToArray(), parallelRequests.ToArray(), requests.ToArray()) { FirstTranscriptMs = firstTranscriptMs };
     }
     private sealed class Stage(SessionMetrics owner, string name, double start) : IDisposable
     {

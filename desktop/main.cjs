@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, screen, clipboard, safeStorage, dialog, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, screen, clipboard, safeStorage, dialog, Notification, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const fs = require('node:fs/promises');
@@ -11,6 +11,7 @@ const { getWordStats, getDisplayedCostStats } = require('./stats.cjs');
 const { readWisprDictionary } = require('./wispr-dictionary.cjs');
 const { startAutoUpdates } = require('./updater.cjs');
 const { DictionarySync } = require('./dictionary-sync.cjs');
+const { definition: modelDefinition, validateModelDictionary } = require('./transcription-models.cjs');
 const testMode = process.argv.includes('--ui-test');
 const startupMode = process.argv.includes('--startup');
 app.setName('Local Whisper');
@@ -31,7 +32,7 @@ else {
     readTerms: () => settings.dictionaryTerms || [],
     writeTerms: async dictionaryTerms => {
       if (state.mode !== 'Idle') throw new Error('Finish recording to receive dictionary changes');
-      if (settings.transcriptionModel === 'grok-voice-transcribe-2-streaming' && (dictionaryTerms.length > 100 || dictionaryTerms.some(term => term.length > 50))) throw new Error('Cloud dictionary exceeds Grok limits. Choose another transcription model to receive it');
+      validateModelDictionary(settings, settings.transcriptionModel, dictionaryTerms);
       settings = testMode ? { ...settings, dictionaryTerms } : await send('saveDictionary', { dictionaryTerms, preserveLearning: true, expectedDictionaryTerms: settings.dictionaryTerms || [] });
       broadcast({ type: 'dictionarySynced', settings });
     },
@@ -206,7 +207,17 @@ else {
   }
   function secure(win, file) {
     const allowed = pathToFileURL(path.join(__dirname, file)).href;
-    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    const privacyLinks = new Set([
+      'https://openrouter.ai/docs/guides/privacy/data-collection',
+      'https://openrouter.ai/settings/privacy',
+      'https://developers.openai.com/api/docs/guides/your-data',
+      'https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/speech-service/speech-to-text/data-privacy-security'
+    ]);
+    win.webContents.setWindowOpenHandler(({ url }) => {
+      if (file === 'index.html' && privacyLinks.has(url))
+        shell.openExternal(url).catch(() => notify('Could not open the privacy policy in your browser.'));
+      return { action: 'deny' };
+    });
     win.webContents.on('will-navigate', (event, url) => { if (url !== allowed) event.preventDefault(); });
     win.webContents.session.setPermissionRequestHandler((_, __, callback) => callback(false));
     return win.loadFile(file);
@@ -247,6 +258,19 @@ else {
     }
     switch (method) {
       case 'initial': return { history, settings, balance, state, historyError, dictionarySync: dictionarySync.status(), stats: getWordStats(history), costs: currentCosts() };
+      case 'microphones': return testMode ? settings.microphones || [] : send('microphones');
+      case 'captureShortcut':
+        if (typeof params?.enabled !== 'boolean') throw new Error('Invalid shortcut capture.');
+        if (params.enabled && !main.isFocused() && !testMode) throw new Error('Focus Settings before changing the shortcut.');
+        return testMode ? null : send(method, params);
+      case 'startMicrophoneTest':
+        if (typeof params?.microphoneDeviceId !== 'string' || params.microphoneDeviceId.length > 2048) throw new Error('Invalid microphone selection.');
+        if (!main.isFocused() && !testMode) throw new Error('Focus Settings before testing the microphone.');
+        return testMode ? null : send(method, params);
+      case 'stopMicrophoneTest':
+        if (typeof params?.playback !== 'boolean') throw new Error('Invalid microphone test.');
+        if (testMode) { broadcast({ type: 'microphoneTestStopped', audio: null }); return null; }
+        return send(method, params);
       case 'configureDictionarySync': {
         if (typeof params.url !== 'string' || typeof params.key !== 'string') throw new Error('Invalid sync settings.');
         await dictionarySync.configure(params.url.trim(), params.key.trim());
@@ -272,12 +296,14 @@ else {
         broadcast({ type: 'settings', settings }); return settings;
       }
       case 'saveSettings': {
-        if (!params || typeof params.liveChunks !== 'boolean' || typeof params.doubleTranscription !== 'boolean' || typeof params.lockMode !== 'boolean' || typeof params.autoLearn !== 'boolean' || (params.apiKey != null && (typeof params.apiKey !== 'string' || params.apiKey.length > 1024)) || (params.xaiApiKey != null && (typeof params.xaiApiKey !== 'string' || params.xaiApiKey.length > 1024))) throw new Error('Invalid settings.');
-        if (!['gpt-transcribe', 'mai-transcribe-2-verbatim', 'mai-transcribe-2-clean', 'grok-voice-transcribe-2-streaming'].includes(params.transcriptionModel)) throw new Error('Invalid transcription model.');
+        if (params?.shortcut != null && (!Number.isInteger(params.shortcut.modifiers) || params.shortcut.modifiers < 1 || params.shortcut.modifiers > 15 || !Number.isInteger(params.shortcut.key) || params.shortcut.key < 0 || params.shortcut.key > 255)) throw new Error('Invalid shortcut.');
+        if (params?.microphoneDeviceId != null && (typeof params.microphoneDeviceId !== 'string' || params.microphoneDeviceId.length > 2048)) throw new Error('Invalid microphone selection.');
+        if (!params || typeof params.liveChunks !== 'boolean' || typeof params.doubleTranscription !== 'boolean' || typeof params.lockMode !== 'boolean' || typeof params.autoLearn !== 'boolean' || ['apiKey', 'xaiApiKey', 'gatewayApiKey'].some(name => params[name] != null && (typeof params[name] !== 'string' || params[name].length > 1024))) throw new Error('Invalid settings.');
+        modelDefinition(settings, params.transcriptionModel);
         if (!['off', 'luna', 'luna-fast'].includes(params.cleanupMode)) throw new Error('Invalid cleanup mode.');
         validateDictionaryTerms(params.dictionaryTerms);
-        if (params.transcriptionModel === 'grok-voice-transcribe-2-streaming' && (params.dictionaryTerms.length > 100 || params.dictionaryTerms.some(term => term.length > 50))) throw new Error('Grok streaming accepts up to 100 dictionary terms of 50 characters each.');
-        settings = testMode ? { ...settings, hasXaiKey: settings.hasXaiKey || !!params.xaiApiKey, liveChunks: params.liveChunks, doubleTranscription: params.doubleTranscription, lockMode: params.lockMode, autoLearn: params.autoLearn, transcriptionModel: params.transcriptionModel, cleanupMode: params.cleanupMode, dictionaryTerms: params.dictionaryTerms } : await send('saveSettings', params);
+        validateModelDictionary(settings, params.transcriptionModel, params.dictionaryTerms);
+        settings = testMode ? { ...settings, hasXaiKey: settings.hasXaiKey || !!params.xaiApiKey, hasGatewayKey: settings.hasGatewayKey || !!params.gatewayApiKey, liveChunks: params.liveChunks, doubleTranscription: params.doubleTranscription, lockMode: params.lockMode, autoLearn: params.autoLearn, transcriptionModel: params.transcriptionModel, cleanupMode: params.cleanupMode, shortcut: params.shortcut ?? settings.shortcut, microphoneDeviceId: params.microphoneDeviceId ?? settings.microphoneDeviceId ?? '', dictionaryTerms: params.dictionaryTerms } : await send('saveSettings', params);
         broadcast({ type: 'settings', settings }); refreshCredits(); dictionarySync.sync(); return settings;
       }
       case 'importWisprDictionary': {
@@ -322,7 +348,7 @@ else {
       case 'transcribeAlternate': {
         const entry = history.find(x => x.id === params.id); if (!entry) throw new Error('Transcript no longer exists.');
         if (!entry.hasAudio) throw new Error('This transcript has no saved recording.');
-        const allowedModels = ['gpt-transcribe', 'mai-transcribe-2-verbatim', 'mai-transcribe-2-clean', 'grok-voice-transcribe-2-streaming'];
+        const allowedModels = (settings.models || []).map(model => model.id);
         if (!allowedModels.includes(params.model)) throw new Error('Choose a valid transcription model.');
         let updated;
         if (testMode) {
@@ -397,6 +423,16 @@ else {
     const webPreferences = { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false };
     main = new BrowserWindow({ width: 1220, height: 820, minWidth: 850, minHeight: 600, frame: false, backgroundColor: '#f5f4f0', show: false, webPreferences });
     main.on('close', event => { if (!quitting) { event.preventDefault(); main.hide(); } });
+    const stopSettingsTools = () => {
+      if (!testMode && engine?.stdin.writable) {
+        send('captureShortcut', { enabled: false }).catch(() => {});
+        send('stopMicrophoneTest', { playback: false }).catch(() => {});
+      }
+      if (!main.isDestroyed()) main.webContents.send('event', { type: 'settingsToolsStopped' });
+    };
+    main.on('blur', stopSettingsTools);
+    main.on('hide', stopSettingsTools);
+    main.webContents.on('render-process-gone', stopSettingsTools);
     overlay = new BrowserWindow({ width: 192, height: 56, frame: false, transparent: true, resizable: false, focusable: false, skipTaskbar: true, alwaysOnTop: true, show: false, hasShadow: false, webPreferences });
     overlay.setAlwaysOnTop(true, 'screen-saver');
     overlay.setIgnoreMouseEvents(true);

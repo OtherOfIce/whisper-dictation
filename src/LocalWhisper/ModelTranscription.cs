@@ -22,6 +22,7 @@ internal sealed class ModelTranscription
 
     internal static string[] FallbackOrder(string requested) => requested switch
     {
+        TranscriptionModels.MaiStreaming => [TranscriptionModels.MaiStreaming, TranscriptionModels.MaiClean, TranscriptionModels.Gpt, TranscriptionModels.GrokStreaming],
         TranscriptionModels.GrokStreaming => [TranscriptionModels.GrokStreaming, TranscriptionModels.MaiClean, TranscriptionModels.Gpt],
         TranscriptionModels.Gpt => [TranscriptionModels.Gpt, TranscriptionModels.MaiClean, TranscriptionModels.GrokStreaming],
         TranscriptionModels.MaiVerbatim => [TranscriptionModels.MaiVerbatim, TranscriptionModels.Gpt, TranscriptionModels.GrokStreaming],
@@ -58,9 +59,7 @@ internal sealed class ModelTranscription
         IReadOnlyList<string> dictionary, SessionMetrics metrics, CancellationToken cancellation)
     {
         if (!TranscriptionModels.IsValid(model)) throw new InvalidOperationException("Invalid transcription model.");
-        if (!available(model)) throw new InvalidOperationException(model == TranscriptionModels.GrokStreaming
-            ? "Add an xAI API key in Settings first."
-            : "Add an OpenRouter API key in Settings first.");
+        if (!available(model)) throw new InvalidOperationException($"Check the {TranscriptionModels.Describe(model).Credential} key and dictionary in Settings first.");
         metrics.RequestedTranscriptionModel = model;
         var text = await transcribe(model, audio, format, dictionary, cancellation).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(text)) throw new InvalidDataException("The provider returned no transcript.");

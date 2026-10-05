@@ -1,0 +1,14 @@
+{
+  "name": "gateway-transcribe-eval",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bench": "node --env-file-if-exists=.env.local benchmark.mjs",
+    "test": "node --test *.test.mjs"
+  },
+  "engines": { "node": ">=24" },
+  "dependencies": {
+    "@ai-sdk/gateway": "4.0.103",
+    "ai": "7.0.127"
+  }
+}

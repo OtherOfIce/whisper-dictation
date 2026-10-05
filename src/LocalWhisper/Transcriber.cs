@@ -6,17 +6,6 @@ using System.Net;
 
 namespace LocalWhisper;
 
-public static class TranscriptionModels
-{
-    public const string Gpt = "gpt-transcribe";
-    public const string MaiVerbatim = "mai-transcribe-2-verbatim";
-    public const string MaiClean = "mai-transcribe-2-clean";
-    public const string GrokStreaming = "grok-voice-transcribe-2-streaming";
-    public static bool IsValid(string value) => value is Gpt or MaiVerbatim or MaiClean or GrokStreaming;
-    public static bool IsMai(string value) => value is MaiVerbatim or MaiClean;
-    public static bool IsStreaming(string value) => value == GrokStreaming;
-}
-
 public sealed class Transcriber(HttpClient client)
 {
     public const string Model = "openai/gpt-transcribe";

@@ -21,6 +21,13 @@ const texts = [
   'This is so much better than typing everything out. I can just say what I’m thinking and keep moving.',
   'Remember to take a look at the new designs before our meeting on Friday.'
 ];
+const models = [
+  { id: 'gpt-transcribe', label: 'GPT-Transcribe', credential: 'openrouter', streaming: false, dictionaryHints: true, maxDictionaryTerms: 1000, maxTermLength: 12000, parallelRequests: false },
+  { id: 'mai-transcribe-2-verbatim', label: 'MAI-Transcribe-2 · Verbatim', credential: 'openrouter', streaming: false, dictionaryHints: true, maxDictionaryTerms: 1000, maxTermLength: 12000, parallelRequests: true },
+  { id: 'mai-transcribe-2-clean', label: 'MAI-Transcribe-2 · Clean', credential: 'openrouter', streaming: false, dictionaryHints: true, maxDictionaryTerms: 1000, maxTermLength: 12000, parallelRequests: true },
+  { id: 'grok-voice-transcribe-2-streaming', label: 'Grok Voice Transcribe 2.0 · Streaming', credential: 'xai', streaming: true, dictionaryHints: true, maxDictionaryTerms: 100, maxTermLength: 50, parallelRequests: false },
+  { id: 'mai-transcribe-2-streaming', label: 'MAI-Transcribe-2 · Streaming', credential: 'gateway', streaming: true, dictionaryHints: false, maxDictionaryTerms: 1000, maxTermLength: 12000, parallelRequests: false }
+];
 module.exports = {
   metrics,
   history: texts.map((text, i) => ({ id: `demo-${i}`, text, hasAudio: i === 0, metrics: {
@@ -37,7 +44,7 @@ module.exports = {
       ...([0, 2].includes(i) ? [{ category: 'cleanup', model: 'openai/gpt-5.6-luna', amount: i === 0 ? 0.0003 : 0.0005 }] : [])
     ]
   } })),
-  settings: { hasKey: true, hasXaiKey: false, liveChunks: false, doubleTranscription: true, lockMode: true, transcriptionModel: 'mai-transcribe-2-clean', cleanupMode: 'off', dictionaryTerms: [] },
+  settings: { hasKey: true, hasXaiKey: false, hasGatewayKey: false, models, liveChunks: false, doubleTranscription: true, lockMode: true, transcriptionModel: 'mai-transcribe-2-clean', cleanupMode: 'off', dictionaryTerms: [], microphoneDeviceId: '', microphones: [{ id: 'desktop-mic', name: 'Desktop microphone' }, { id: 'usb-mic', name: 'USB microphone' }] },
   balance: {
     kind: 'account', remaining: 18.42, usage: 1.5832, usageDaily: .0642, message: 'OpenRouter account balance', updated: new Date().toISOString()
   },

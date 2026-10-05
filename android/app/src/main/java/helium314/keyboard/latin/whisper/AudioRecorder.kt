@@ -58,6 +58,7 @@ class AudioRecorder(private val context: Context) {
 
         var pendingOutput: RandomAccessFile? = null
         return try {
+            val preferredDevice = MicrophoneInput.configure(context, audioRecord)
             val wavOutput = RandomAccessFile(file, "rw")
             pendingOutput = wavOutput
             wavOutput.setLength(0)
@@ -76,8 +77,13 @@ class AudioRecorder(private val context: Context) {
             captureInfo = JSONObject().put("source", "MIC").put("requestedSampleRate", AudioRecordingSpec.SAMPLE_RATE)
                 .put("reportedSampleRate", audioRecord.sampleRate).put("reportedChannels", audioRecord.channelCount)
                 .put("bufferBytes", bufferSize)
+                .put("microphoneSelection", if (preferredDevice == null) "normal" else "secondary")
             if (android.os.Build.VERSION.SDK_INT >= 23) {
-                audioRecord.routedDevice?.let { captureInfo?.put("inputDeviceType", it.type)?.put("inputDeviceName", it.productName.toString()) }
+                preferredDevice?.let {
+                    captureInfo?.put("preferredInputDeviceId", it.id)
+                    if (android.os.Build.VERSION.SDK_INT >= 28) captureInfo?.put("preferredInputDeviceAddress", it.address)
+                }
+                updateInputDevice(audioRecord)
             }
             outputFile = file
             writerRunning = true
@@ -129,6 +135,16 @@ class AudioRecorder(private val context: Context) {
         runCatching { current.release() }
     }
 
+    private fun updateInputDevice(current: AudioRecord) {
+        if (android.os.Build.VERSION.SDK_INT >= 23) {
+            current.routedDevice?.let {
+                captureInfo?.put("inputDeviceType", it.type)?.put("inputDeviceName", it.productName.toString())
+                    ?.put("inputDeviceId", it.id)
+                if (android.os.Build.VERSION.SDK_INT >= 28) captureInfo?.put("inputDeviceAddress", it.address)
+            }
+        }
+    }
+
     private fun writePcm(audioRecord: AudioRecord, output: RandomAccessFile, bufferSize: Int) {
         val buffer = ByteArray(bufferSize)
         var pcmBytes = 0
@@ -137,6 +153,7 @@ class AudioRecorder(private val context: Context) {
                 val requested = minOf(buffer.size, AudioRecordingSpec.MAX_PCM_BYTES - pcmBytes)
                 val read = audioRecord.read(buffer, 0, requested)
                 if (read > 0) {
+                    if (pcmBytes == 0) updateInputDevice(audioRecord)
                     output.write(buffer, 0, read)
                     pcmBytes += read
                 } else if (read != 0 && writerRunning) {

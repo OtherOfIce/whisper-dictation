@@ -26,7 +26,12 @@ if ($LASTEXITCODE -ne 0) { throw "Native engine build failed with exit code $LAS
 
 Push-Location $desktopDirectory
 try {
-    if (-not (Test-Path 'node_modules')) {
+    $dependenciesHealthy = Test-Path 'node_modules'
+    if ($dependenciesHealthy) {
+        & npm ls --depth=0 --silent *> $null
+        $dependenciesHealthy = $LASTEXITCODE -eq 0
+    }
+    if (-not $dependenciesHealthy) {
         Write-Host 'Installing desktop dependencies...'
         & npm ci
         if ($LASTEXITCODE -ne 0) { throw "Desktop dependency installation failed with exit code $LASTEXITCODE." }
@@ -42,5 +47,5 @@ try {
 if (-not (Test-Path $appPath)) { throw "Packaged app was not found at $appPath." }
 Write-Host 'Launching Local Whisper...'
 $launchEnvironment = @{ ELECTRON_RUN_AS_NODE = $null }
-Start-Process -FilePath $appPath -WorkingDirectory (Split-Path $appPath) -Environment $launchEnvironment
+Start-Process -FilePath $appPath -WorkingDirectory (Split-Path $appPath) -Environment $launchEnvironment -WindowStyle Hidden
 Write-Host ("Running: {0}" -f $appPath)

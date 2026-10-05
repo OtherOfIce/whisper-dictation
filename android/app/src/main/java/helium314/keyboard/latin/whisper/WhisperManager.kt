@@ -109,7 +109,9 @@ class WhisperManager @JvmOverloads constructor(
         val requestSession = editorSessionToken
         val apiKey = credentials.load()
         if (apiKey.isNullOrBlank()) {
-            if (!retry) {
+            if (retry) {
+                failedRecording.delete()
+            } else {
                 retainFailed(file)
                 file.delete()
                 recordingFile = null
@@ -174,8 +176,11 @@ class WhisperManager @JvmOverloads constructor(
                 errorType = error.javaClass.simpleName
                 Log.e(TAG, "Transcription request failed: ${error.javaClass.simpleName}: ${error.message}")
                 if (operationId == requestOperation) {
-                    if (!retry) retainFailed(file)
-                    Toast.makeText(context, "Transcription failed. Tap the microphone to retry.", Toast.LENGTH_LONG).show()
+                    if (retry) failedRecording.delete() else retainFailed(file)
+                    val message = if (failedRecording.isFile)
+                        "Transcription failed. Tap to retry; tap again to cancel and record again."
+                    else "Transcription failed. Tap the microphone to record again."
+                    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                 }
             } finally {
                 withContext(NonCancellable + Dispatchers.IO) {
@@ -208,6 +213,8 @@ class WhisperManager @JvmOverloads constructor(
         activeJob?.cancel(); job = null
         if (activeJob == null) recordingFile?.delete()
         recordingFile = null; transcribing = false; cleaning = false
+        // An explicit microphone tap cancels the saved retry too. Lifecycle changes keep it.
+        if (showMessage) failedRecording.delete()
         onStateChanged?.invoke(recordingState)
         if (showMessage && wasActive) Toast.makeText(context, "Voice input cancelled", Toast.LENGTH_SHORT).show()
     }

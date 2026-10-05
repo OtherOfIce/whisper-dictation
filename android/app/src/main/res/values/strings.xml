@@ -1319,6 +1319,9 @@ New dictionary:
     <string name="whisper_dictionary_title">Preferred terms</string>
     <string name="whisper_dictionary_hint">One name or term per line. Up to 1,000 terms, 120 characters per term, and 12,000 characters total.</string>
     <string name="whisper_privacy_notice">Voice input sends recorded audio and preferred terms to OpenRouter and the selected transcription provider. Cancel stops work that has not completed, but cannot retract audio already uploaded.</string>
+    <string name="whisper_secondary_microphone_title">Use secondary microphone</string>
+    <string name="whisper_secondary_microphone_description">Use the alternate built-in microphone for dictation. Turn off to use the normal input.</string>
+    <string name="whisper_secondary_microphone_unavailable">This phone does not expose a separate secondary microphone. Turn this setting off to use the normal input.</string>
     <string name="whisper_language_title">Transcription language</string>
     <string name="whisper_transcription_model_title">Voice model</string>
     <string name="whisper_transcription_model_hint">Verbatim keeps fillers and false starts. Clean removes some spoken disfluencies.</string>

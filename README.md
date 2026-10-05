@@ -8,9 +8,12 @@ Install the [latest Windows release](https://github.com/OtherOfIce/whisper-dicta
 
 The first installer must be run manually if you currently use the unpacked `dist/electron/LocalWhisper-win32-x64/LocalWhisper.exe`. It keeps the same app name and user data location, so your settings and history remain available. Development runs and unpacked builds do not check for updates.
 
+- Settings lets you rebind the dictation shortcut. Click Change shortcut, press and release a combination, then save. Use two or more modifiers, or a modifier with a letter, number, function key, or Space. Reset restores Ctrl + Win. Conventional combinations are checked for Windows reservations and registered conflicts; modifier-only combinations and shortcuts handled by other low-level hooks cannot be checked reliably.
 - Press Ctrl + Win to speak. Recordings start in lock mode by default, so press the shortcut again to finish.
 - Turn off Default to lock mode in Settings to use push-to-talk mode. Hold Ctrl + Win to speak and release to insert. Double-tap the shortcut to switch that recording to lock mode. Escape discards a recording.
 - A compact waveform appears while the app is recording or transcribing.
+- Settings includes a microphone selector. System default keeps Windows in control; a specific input is remembered across restarts. Refresh microphones after connecting a device. A disconnected selected microphone must be reconnected or changed before recording.
+- Test microphone in Settings records up to five seconds from the currently selected input, including an unsaved selection. Watch the live input meter, stop early if needed, and click Play test to hear it. Test audio stays in memory, is never transcribed or saved to History, and is discarded when you leave Settings, switch microphones, or the window loses focus.
 - History is searchable, survives restarts, and supports copying and deleting transcripts.
 - Word counts show total, today, and the last seven local calendar days. Counts use saved history before cleanup, so deleting a transcript removes its words from these totals.
 - Settings lets you choose GPT-Transcribe, MAI-Transcribe-2 Verbatim, MAI-Transcribe-2 Clean, or the experimental Grok Voice Transcribe 2.0 streaming mode. MAI Clean remains the default.
@@ -45,6 +48,8 @@ npm start
 npm test
 npm run test:ui
 npm run test:engine
+# Optional: captures the system-default microphone locally, without API requests
+npm run test:microphone
 npm run package
 npm run package:installer
 ```

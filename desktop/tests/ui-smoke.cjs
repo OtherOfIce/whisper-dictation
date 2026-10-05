@@ -106,6 +106,46 @@ exports.run = async ({ main, overlay, learning, app, engineEvent, testOverlayAct
   assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.lockMode)"), true);
   assert.equal(await evaluate('document.getElementById("transcription-model").value'), 'mai-transcribe-2-clean');
   assert.equal(await evaluate('document.getElementById("cleanup-mode").value'), 'off');
+  assert.equal(await evaluate('document.getElementById("microphone-device").value'), '');
+  assert.equal(await evaluate('document.getElementById("microphone-device").options.length'), 3);
+  assert.equal(await evaluate('document.getElementById("shortcut-value").textContent'), 'Ctrl + Win');
+  await evaluate('document.getElementById("rebind-shortcut").click()'); await wait(50);
+  engineEvent({ type: 'shortcutCaptured', shortcut: { modifiers: 6, key: 68 } }); await wait(50);
+  assert.equal(await evaluate('document.getElementById("shortcut-value").textContent'), 'Ctrl + Shift + D');
+  await evaluate('document.getElementById("settings-form").requestSubmit(document.querySelector("[type=submit]"))'); await wait(100);
+  assert.deepEqual(await evaluate("window.whisper.call('initial').then(x => x.settings.shortcut)"), { modifiers: 6, key: 68 });
+  assert.equal(await evaluate('document.getElementById("shortcut-hint").textContent'), 'Press Ctrl + Shift + D to speak');
+  await evaluate('document.getElementById("reset-shortcut").click(); document.getElementById("settings-form").requestSubmit(document.querySelector("[type=submit]"))'); await wait(100);
+  assert.deepEqual(await evaluate("window.whisper.call('initial').then(x => x.settings.shortcut)"), { modifiers: 10, key: 0 });
+  await evaluate('document.getElementById("rebind-shortcut").click()'); await wait(50);
+  engineEvent({ type: 'shortcutCaptured', shortcut: { modifiers: 0, key: 68 } }); await wait(50);
+  assert.equal(await evaluate('document.getElementById("shortcut-value").textContent'), 'Ctrl + Win');
+  await evaluate('document.getElementById("test-microphone").click()'); await wait(50);
+  engineEvent({ type: 'microphoneTestLevel', level: 0.6, seconds: 1.2 }); await wait(50);
+  assert.equal(await evaluate('document.getElementById("microphone-test-level").value'), 0.6);
+  assert.equal(await evaluate('document.getElementById("test-microphone").textContent'), 'Stop test');
+  const testWav = Buffer.alloc(364); testWav.write('RIFF'); testWav.writeUInt32LE(356, 4); testWav.write('WAVEfmt ', 8); testWav.writeUInt32LE(16, 16); testWav.writeUInt16LE(1, 20); testWav.writeUInt16LE(1, 22); testWav.writeUInt32LE(16000, 24); testWav.writeUInt32LE(32000, 28); testWav.writeUInt16LE(2, 32); testWav.writeUInt16LE(16, 34); testWav.write('data', 36); testWav.writeUInt32LE(320, 40);
+  engineEvent({ type: 'microphoneTestStopped', audio: testWav.toString('base64') }); await wait(50);
+  assert.equal(await evaluate('document.getElementById("play-microphone-test").disabled'), false);
+  assert.equal(await evaluate('document.getElementById("test-microphone").textContent'), 'Test microphone');
+  await evaluate('document.getElementById("play-microphone-test").click()'); await wait(100);
+  await evaluate('document.querySelector("[data-view=history]").click()'); await wait(50);
+  assert.equal(await evaluate('document.getElementById("play-microphone-test").disabled'), true);
+  await evaluate('document.querySelector("[data-view=settings]").click()');
+  await evaluate('document.getElementById("test-microphone").click()'); await wait(50);
+  engineEvent({ type: 'settingsToolsStopped' }); await wait(50);
+  assert.equal(await evaluate('document.getElementById("test-microphone").textContent'), 'Test microphone');
+  engineEvent({ type: 'microphoneTestStopped', audio: testWav.toString('base64') }); await wait(50);
+  assert.equal(await evaluate('document.getElementById("play-microphone-test").disabled'), true);
+
+  await evaluate("document.getElementById('microphone-device').value='usb-mic'; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))");
+  await wait(100);
+  assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.microphoneDeviceId)"), 'usb-mic');
+  await evaluate("document.getElementById('refresh-microphones').click()");
+  await wait(100);
+  assert.equal(await evaluate('document.getElementById("microphone-device").value'), 'usb-mic');
+  await evaluate("document.getElementById('microphone-device').value=''; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))");
+  await wait(100);
   assert.equal(await evaluate('document.getElementById("dictionary-terms").value'), '');
   assert.equal(await evaluate('document.getElementById("sync-status").textContent'), 'Sync is off');
   assert.equal(await evaluate('document.getElementById("sync-now").disabled'), true);
@@ -153,12 +193,18 @@ exports.run = async ({ main, overlay, learning, app, engineEvent, testOverlayAct
   await evaluate('document.getElementById("dictionary-terms").value="Astra\\nExisting term"; document.getElementById("import-wispr").click()'); await wait(100);
   assert.deepEqual(await evaluate("window.whisper.call('initial').then(x => x.settings.dictionaryTerms)"), ['Astra', 'Existing term', 'Wispr Flow']);
   assert.equal(await evaluate('document.getElementById("import-wispr-status").textContent'), '1 new term imported. 3 snippets were skipped.');
-  for (const model of ['mai-transcribe-2-verbatim', 'mai-transcribe-2-clean', 'gpt-transcribe', 'grok-voice-transcribe-2-streaming']) {
+  for (const model of ['mai-transcribe-2-verbatim', 'mai-transcribe-2-clean', 'gpt-transcribe', 'grok-voice-transcribe-2-streaming', 'mai-transcribe-2-streaming']) {
     await evaluate(`document.getElementById('transcription-model').value=${JSON.stringify(model)}; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))`);
     await wait(100);
     assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.transcriptionModel)"), model);
   }
   assert.equal(await evaluate('document.getElementById("live-chunks").disabled'), true);
+  assert.equal(await evaluate('document.getElementById("double-transcription").disabled'), true);
+  assert((await evaluate('document.getElementById("dictionary-hints-note").textContent')).includes('does not support'));
+  await evaluate("document.getElementById('gateway-api-key').value='gateway-test-only'; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))");
+  await wait(100);
+  assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.hasGatewayKey)"), true);
+  assert.equal(await evaluate('document.getElementById("gateway-api-key").value'), '');
   await evaluate("document.getElementById('transcription-model').value='mai-transcribe-2-clean'; document.getElementById('transcription-model').dispatchEvent(new Event('change'))");
   assert.equal(await evaluate('document.getElementById("cleanup-mode").disabled'), false);
   assert.equal(await evaluate('document.getElementById("live-chunks").disabled'), false);

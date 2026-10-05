@@ -30,6 +30,7 @@ function renderWordStats(stats) {
 }
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4500); }
 function navigate(view) {
+  if (view !== 'settings') stopSettingsTools();
   if (view !== 'history') stopAudio();
   $('history-view').hidden = view !== 'history'; $('settings-view').hidden = view !== 'settings';
   document.querySelectorAll('[data-view]').forEach(button => button.classList.toggle('selected', button.dataset.view === view));
@@ -133,6 +134,8 @@ const money = (number, digits = 2) => number == null ? '—' : new Intl.NumberFo
 const modelNames = {
   'openai/gpt-transcribe': 'GPT-Transcribe',
   'microsoft/mai-transcribe-2': 'MAI-Transcribe-2',
+  'microsoft/mai-transcribe-2-streaming': 'MAI-Transcribe-2 · Streaming',
+  'mai-transcribe-2-streaming': 'MAI-Transcribe-2 · Streaming',
   'google/gemini-3.8-flash': 'Gemini 3.8 Flash',
   'openai/gpt-5.6-luna': 'Luna 5.6',
   'openai/gpt-6-luna': 'Luna 6',
@@ -223,27 +226,109 @@ $('refresh-balance').onclick = async () => {
   catch (error) { toast(error.message); }
   finally { $('refresh-balance').disabled = false; }
 };
+let draftShortcut = { modifiers: 10, key: 0 }, capturingShortcut = false;
+let testingMicrophone = false, testPending = false, testAudioUrl = null, testPlayback = null;
+function formatShortcut(binding) {
+  const parts = [[2, 'Ctrl'], [1, 'Alt'], [4, 'Shift'], [8, 'Win']].filter(([bit]) => binding.modifiers & bit).map(([, label]) => label);
+  if (binding.key) parts.push(binding.key === 32 ? 'Space' : binding.key >= 112 && binding.key <= 135 ? `F${binding.key - 111}` : String.fromCharCode(binding.key));
+  return parts.join(' + ');
+}
+function renderShortcut() { $('shortcut-value').textContent = formatShortcut(draftShortcut); }
+function discardMicrophoneAudio() {
+  testPlayback?.pause(); testPlayback = null;
+  if (testAudioUrl) URL.revokeObjectURL(testAudioUrl);
+  testAudioUrl = null; $('play-microphone-test').disabled = true;
+}
+function resetSettingsTools() {
+  capturingShortcut = false; testingMicrophone = false; testPending = false;
+  $('rebind-shortcut').textContent = 'Change shortcut';
+  $('test-microphone').textContent = 'Test microphone'; $('test-microphone').disabled = false;
+  $('microphone-test-level').value = 0;
+  $('microphone-test-status').textContent = 'Record up to five seconds, then play it back. The test stays on this device and is discarded when you leave Settings.';
+  discardMicrophoneAudio();
+}
+function stopSettingsTools() {
+  resetSettingsTools();
+  call('captureShortcut', { enabled: false }).catch(() => {});
+  call('stopMicrophoneTest', { playback: false }).catch(() => {});
+}
+$('rebind-shortcut').onclick = async () => {
+  const enabled = !capturingShortcut;
+  try {
+    await call('captureShortcut', { enabled }); capturingShortcut = enabled;
+    $('rebind-shortcut').textContent = enabled ? 'Cancel' : 'Change shortcut';
+    $('shortcut-status').textContent = enabled ? 'Press and release your new combination. Escape cancels.' : 'Changes apply when you save Settings.';
+  } catch (error) { toast(error.message); }
+};
+$('reset-shortcut').onclick = () => {
+  call('captureShortcut', { enabled: false }).catch(error => toast(error.message));
+  capturingShortcut = false; draftShortcut = { modifiers: 10, key: 0 }; renderShortcut();
+  $('rebind-shortcut').textContent = 'Change shortcut';
+  $('shortcut-status').textContent = 'Save Settings to restore Ctrl + Win.';
+};
+$('test-microphone').onclick = async () => {
+  if (testPending) return;
+  testPending = true; $('test-microphone').disabled = true;
+  try {
+    if (testingMicrophone) {
+      await call('stopMicrophoneTest', { playback: true });
+    } else {
+      stopAudio(); discardMicrophoneAudio();
+      await call('startMicrophoneTest', { microphoneDeviceId: $('microphone-device').value });
+      testingMicrophone = true; $('test-microphone').textContent = 'Stop test';
+      $('microphone-test-status').textContent = 'Speak now. The test stops after five seconds.';
+    }
+  } catch (error) { testingMicrophone = false; $('test-microphone').textContent = 'Test microphone'; toast(error.message); }
+  finally { testPending = false; $('test-microphone').disabled = false; }
+};
+$('microphone-device').addEventListener('change', stopSettingsTools);
+$('play-microphone-test').onclick = async () => {
+  if (!testAudioUrl) return;
+  testPlayback?.pause(); testPlayback = new Audio(testAudioUrl);
+  try { await testPlayback.play(); } catch { toast('Could not play the microphone test.'); }
+};
+window.addEventListener('blur', stopSettingsTools);
 function renderSettings(settings) {
   currentSettings = settings;
+  draftShortcut = settings.shortcut || { modifiers: 10, key: 0 };
+  renderShortcut();
+  const shortcutName = formatShortcut(draftShortcut);
+  $('shortcut-hint').textContent = `Press ${shortcutName} to speak`;
+  $('shortcut-tip').textContent = `Press ${shortcutName} to dictate. Press it again to finish.`;
+  if (Array.isArray(settings.models)) {
+    for (const model of settings.models) modelNames[model.id] = model.label;
+    for (const id of ['transcription-model', 'alternate-model']) {
+      const select = $(id), previous = select.value;
+      select.replaceChildren(...settings.models.map(model => {
+        const option = document.createElement('option'); option.value = model.id; option.textContent = model.label; return option;
+      }));
+      if (settings.models.some(model => model.id === previous)) select.value = previous;
+    }
+  }
   $('key-status').textContent = settings.hasKey ? 'Saved securely' : 'Not connected';
   $('xai-key-status').textContent = settings.hasXaiKey ? 'Saved securely' : 'Not connected';
+  $('gateway-key-status').textContent = settings.hasGatewayKey ? 'Saved securely' : 'Not connected';
   $('live-chunks').checked = !!settings.liveChunks;
   $('double-transcription').checked = !!settings.doubleTranscription;
   $('lock-mode').checked = settings.lockMode !== false;
   $('auto-learn').checked = settings.autoLearn !== false;
   $('transcription-model').value = settings.transcriptionModel || 'mai-transcribe-2-clean';
   $('cleanup-mode').value = settings.cleanupMode || 'off';
+  renderMicrophones(settings.microphones || [], settings.microphoneDeviceId || '');
   $('dictionary-terms').value = Array.isArray(settings.dictionaryTerms) ? settings.dictionaryTerms.join('\n') : '';
   updateModelSettings();
 }
 function updateModelSettings() {
-  const streaming = $('transcription-model').value === 'grok-voice-transcribe-2-streaming';
-  const mai = $('transcription-model').value.startsWith('mai-transcribe-2-');
+  const model = currentSettings.models?.find(model => model.id === $('transcription-model').value);
+  const streaming = !!model?.streaming;
   $('live-chunks-note').textContent = streaming
-    ? 'Grok streams microphone audio continuously, so this separate pause-chunk option does not apply.'
+    ? 'This model streams microphone audio continuously, so the separate pause-chunk option does not apply.'
     : 'Experimental. Chunks may change punctuation or lose context. Cancel stops pending work; it cannot undo audio already uploaded.';
   $('live-chunks').disabled = streaming;
-  $('double-transcription').disabled = !mai;
+  $('double-transcription').disabled = !model?.parallelRequests;
+  $('dictionary-hints-note').textContent = model?.dictionaryHints === false
+    ? 'This model does not support dictionary recognition hints. Your saved terms remain available for other models.'
+    : 'Saved terms are sent as recognition hints. These are hints, not guaranteed replacements.';
   $('cleanup-mode').disabled = false;
   $('cleanup-note').textContent = 'Adds a separate OpenRouter request before pasting. To fit the insertion, Luna also receives up to 500 nearby characters from the focused text field; password fields are excluded. Fast uses priority processing at twice the token price. If cleanup fails, the original transcript is used.';
 }
@@ -256,6 +341,21 @@ function renderSync(sync, updateConnection = false) {
   $('sync-now').disabled = !sync.connected;
   $('disconnect-sync').disabled = !sync.connected;
 }
+function renderMicrophones(devices, selected) {
+  const options = [new Option('System default', '')];
+  for (const device of devices) options.push(new Option(device.name, device.id));
+  if (selected && !devices.some(device => device.id === selected)) options.push(new Option('Selected microphone unavailable', selected));
+  $('microphone-device').replaceChildren(...options);
+  $('microphone-device').value = selected;
+}
+$('refresh-microphones').onclick = async () => {
+  const button = $('refresh-microphones'); button.disabled = true;
+  try {
+    const devices = await call('microphones');
+    currentSettings.microphones = devices;
+    renderMicrophones(devices, $('microphone-device').value);
+  } catch (error) { toast(error.message); } finally { button.disabled = false; }
+};
 for (const id of ['connect-sync', 'sync-now', 'disconnect-sync']) $(id).onclick = async () => {
   const button = $(id); button.disabled = true;
   try {
@@ -297,10 +397,11 @@ $('import-costs').onclick = async () => {
 };
 $('settings-form').onsubmit = async event => {
   event.preventDefault(); const button = event.submitter; button.disabled = true;
+  if (capturingShortcut) { await call('captureShortcut', { enabled: false }).catch(() => {}); capturingShortcut = false; $('rebind-shortcut').textContent = 'Change shortcut'; }
   try {
     const dictionaryTerms = $('dictionary-terms').value.split(/\r?\n/).map(term => term.trim()).filter(Boolean);
-    const settings = await call('saveSettings', { apiKey: $('api-key').value, xaiApiKey: $('xai-api-key').value, liveChunks: $('live-chunks').checked, doubleTranscription: $('double-transcription').checked, lockMode: $('lock-mode').checked, autoLearn: $('auto-learn').checked, transcriptionModel: $('transcription-model').value, cleanupMode: $('cleanup-mode').value, dictionaryTerms });
-    $('api-key').value = ''; $('xai-api-key').value = '';
+    const settings = await call('saveSettings', { apiKey: $('api-key').value, xaiApiKey: $('xai-api-key').value, gatewayApiKey: $('gateway-api-key').value, liveChunks: $('live-chunks').checked, doubleTranscription: $('double-transcription').checked, lockMode: $('lock-mode').checked, autoLearn: $('auto-learn').checked, transcriptionModel: $('transcription-model').value, cleanupMode: $('cleanup-mode').value, microphoneDeviceId: $('microphone-device').value, shortcut: draftShortcut, dictionaryTerms });
+    $('api-key').value = ''; $('xai-api-key').value = ''; $('gateway-api-key').value = '';
     renderSettings(settings); $('save-message').textContent = 'Settings saved';
   } catch (error) { toast(error.message); } finally { button.disabled = false; }
 };
@@ -343,6 +444,7 @@ async function renderPerformance() {  const id = selectedId;
     $('timings').replaceChildren(fragment);
     $('timing-note').textContent = $('include-recording').checked ? 'Full session, including time spent speaking and clipboard cleanup.' : `Recording time and clipboard cleanup are excluded.${chart.completedEarly ? ` ${chart.completedEarly} stages finished before Stop.` : ''}`;
     const facts = [['Audio length', `${metrics.audioSeconds.toFixed(1)} s`], ['Request size', `${(metrics.requestBytes / 1024).toFixed(0)} KB`], ['Longest UI gap', `${metrics.maxUiGapMs.toFixed(0)} ms`]];
+    if (metrics.firstTranscriptMs != null) facts.push(['First transcript', formatDuration(metrics.firstTranscriptMs)]);
     facts.unshift(...pipelineFacts(metrics));
     for (const hedge of metrics.hedges ?? []) {
       facts.push(['Hedge fired', `after ${formatDuration(hedge.cutoffMs)}`]);
@@ -385,10 +487,11 @@ function renderComparison() {
   $('comparison-versions').replaceChildren(fragment);
   const primaryModel = entry.metrics?.transcriptionModel;
   const dictionary = Array.isArray(currentSettings.dictionaryTerms) ? currentSettings.dictionaryTerms : [];
-  const grokDictionaryCompatible = dictionary.length <= 100 && dictionary.every(term => term.length <= 50);
   for (const option of $('alternate-model').options) {
-    const grok = option.value === 'grok-voice-transcribe-2-streaming';
-    option.disabled = option.value === primaryModel || (grok ? !currentSettings.hasXaiKey || !grokDictionaryCompatible : !currentSettings.hasKey);
+    const model = currentSettings.models?.find(model => model.id === option.value);
+    const hasKey = model && currentSettings[({ openrouter: 'hasKey', xai: 'hasXaiKey', gateway: 'hasGatewayKey' })[model.credential]];
+    const compatible = model && (!model.dictionaryHints || (dictionary.length <= model.maxDictionaryTerms && dictionary.every(term => term.length <= model.maxTermLength)));
+    option.disabled = option.value === primaryModel || !hasKey || !compatible;
   }
   if ($('alternate-model').selectedOptions[0]?.disabled) $('alternate-model').value = [...$('alternate-model').options].find(option => !option.disabled)?.value || '';
   $('create-alternate').disabled = !$('alternate-model').value;
@@ -406,6 +509,38 @@ $('create-alternate').onclick = async () => {
   finally { button.textContent = 'Transcribe'; if (comparisonId) renderComparison(); }
 };
 window.whisper.onEvent(event => {
+  if (event.type === 'settingsToolsStopped') {
+    resetSettingsTools(); $('shortcut-status').textContent = 'Changes apply when you save Settings.';
+  }
+  if (event.type === 'shortcutCaptured') {
+    if (!capturingShortcut) return;
+    capturingShortcut = false; $('rebind-shortcut').textContent = 'Change shortcut';
+    if (event.shortcut) {
+      const { modifiers, key } = event.shortcut;
+      const supportedKey = key === 32 || key >= 48 && key <= 57 || key >= 65 && key <= 90 || key >= 112 && key <= 135;
+      const modifierCount = [1, 2, 4, 8].filter(bit => modifiers & bit).length;
+      if (modifiers && (key ? supportedKey : modifierCount >= 2)) {
+        draftShortcut = event.shortcut; renderShortcut();
+        $('shortcut-status').textContent = 'Save Settings to apply this shortcut. Availability is checked when saving.';
+      } else $('shortcut-status').textContent = 'Choose two modifiers, or a modifier with a letter, number, function key, or Space.';
+    } else $('shortcut-status').textContent = 'Shortcut change cancelled.';
+  }
+  if (event.type === 'microphoneTestLevel' && testingMicrophone) {
+    $('microphone-test-level').value = event.level;
+    $('microphone-test-status').textContent = `Recording test, ${event.seconds.toFixed(1)} / 5 seconds.`;
+  }
+  if (event.type === 'microphoneTestStopped') {
+    const wanted = testingMicrophone;
+    testingMicrophone = false; $('test-microphone').textContent = 'Test microphone'; $('microphone-test-level').value = 0;
+    if (event.error && wanted) toast(event.error);
+    if (event.audio && wanted) {
+      discardMicrophoneAudio();
+      const bytes = Uint8Array.from(atob(event.audio), char => char.charCodeAt(0));
+      testAudioUrl = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+      $('play-microphone-test').disabled = false;
+      $('microphone-test-status').textContent = 'Test ready. Play it back to check your microphone.';
+    } else if (wanted) $('microphone-test-status').textContent = 'Microphone test stopped.';
+  }
   if (event.type === 'transcript') { history.unshift(event.entry); renderHistory(); }
   if (event.type === 'history') { history = event.history; renderHistory(); if (selectedId && !history.some(entry => entry.id === selectedId)) closePerformance(); if (comparisonId) renderComparison(); }
   if (event.type === 'metricsUpdated') { const entry = history.find(x => x.id === event.id); if (entry) entry.metrics = event.metrics; if (event.id === selectedId) renderPerformance(); }

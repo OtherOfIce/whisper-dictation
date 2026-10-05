@@ -8,6 +8,7 @@ internal static class Settings
     private static readonly string Folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalWhisper");
     private static readonly string KeyFile = Path.Combine(Folder, "key.bin");
     private static readonly string XaiKeyFile = Path.Combine(Folder, "xai-key.bin");
+    private static readonly string GatewayKeyFile = Path.Combine(Folder, "gateway-key.bin");
     private static readonly string DictionaryFile = Path.Combine(Folder, "dictionary.bin");
     public static string[] LoadDictionaryTerms() => Vocabulary.Load(DictionaryFile);
     public static void SaveDictionaryTerms(string[] terms) => Vocabulary.Save(DictionaryFile, terms);
@@ -21,6 +22,26 @@ internal static class Settings
         if (File.Exists(file + ".tmp")) File.Delete(file + ".tmp");
     }
     private static readonly string LiveFile = Path.Combine(Folder, "live-chunks.txt");
+    private static readonly string MicrophoneFile = Path.Combine(Folder, "microphone.txt");
+    private static readonly string ShortcutFile = Path.Combine(Folder, "shortcut.json");
+    public static ShortcutBinding Shortcut
+    {
+        get
+        {
+            if (!File.Exists(ShortcutFile)) return ShortcutBinding.Default;
+            var binding = System.Text.Json.JsonSerializer.Deserialize<ShortcutBinding>(File.ReadAllText(ShortcutFile))
+                ?? throw new InvalidOperationException("Invalid saved shortcut.");
+            binding.Validate(); return binding;
+        }
+    }
+    public static void SaveShortcut(ShortcutBinding binding)
+    {
+        binding.Validate(); Directory.CreateDirectory(Folder);
+        File.WriteAllText(ShortcutFile + ".tmp", System.Text.Json.JsonSerializer.Serialize(binding));
+        File.Move(ShortcutFile + ".tmp", ShortcutFile, true);
+    }
+    public static string MicrophoneDeviceId => File.Exists(MicrophoneFile) ? File.ReadAllText(MicrophoneFile).Trim() : "";
+    public static void SaveMicrophoneDeviceId(string id) { Directory.CreateDirectory(Folder); File.WriteAllText(MicrophoneFile, id); }
     public static bool LiveChunks => File.Exists(LiveFile) && File.ReadAllText(LiveFile).Trim() == "true";
     public static void SaveLiveChunks(bool enabled) { Directory.CreateDirectory(Folder); File.WriteAllText(LiveFile, enabled ? "true" : "false"); }
     private static readonly string DoubleFile = Path.Combine(Folder, "double-transcription.txt");
@@ -75,6 +96,9 @@ internal static class Settings
         return Environment.GetEnvironmentVariable("XAI_API_KEY") ?? "";
     }
     public static void SaveXaiKey(string key) => SaveProtected(XaiKeyFile, key);
+    public static string LoadGatewayKey() => File.Exists(GatewayKeyFile) ? LoadProtected(GatewayKeyFile)
+        : Environment.GetEnvironmentVariable("AI_GATEWAY_API_KEY") ?? "";
+    public static void SaveGatewayKey(string key) => SaveProtected(GatewayKeyFile, key);
     private static string LoadProtected(string path) =>
         Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(path), null, DataProtectionScope.CurrentUser));
     private static void SaveProtected(string path, string key)

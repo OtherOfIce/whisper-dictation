@@ -61,7 +61,7 @@ function getCostStats(history, since = null, includeModels = []) {
       const started = new Date(version?.metrics?.transcribedAt || version?.metrics?.started);
       for (const cost of Array.isArray(version?.metrics?.costs) ? version.metrics.costs : []) {
         // The activity ledger only covers OpenRouter. Costs recorded locally for
-        // providers outside it (direct xAI streaming estimates) are always kept.
+        // providers outside it (xAI and Vercel streaming estimates) are always kept.
         if (since && started < since && !includeModels.includes(cost?.model)) continue;
         rows.push(cost);
       }
@@ -71,7 +71,7 @@ function getCostStats(history, since = null, includeModels = []) {
 }
 
 // Models whose spend can never appear in the OpenRouter activity ledger.
-const nonLedgerModels = ['grok-voice-transcribe-2.0'];
+const nonLedgerModels = ['grok-voice-transcribe-2.0', 'microsoft/mai-transcribe-2-streaming'];
 
 function getDisplayedCostStats(history, ledger, now = new Date()) {
   if (!Array.isArray(ledger?.rows)) return { ...getCostStats(history), source: 'history' };

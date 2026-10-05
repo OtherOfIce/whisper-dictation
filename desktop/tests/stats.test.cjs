@@ -95,3 +95,12 @@ test('keeps older direct xAI estimates when OpenRouter activity is imported', ()
     source: 'activity', through: '2026-09-14T00:00:00Z', importedAt: '2026-09-15T11:00:00Z'
   });
 });
+
+test('keeps Vercel gateway spend when importing the OpenRouter ledger', () => {
+  const history = [{ metrics: { started: '2026-09-14T10:00:00Z', costs: [
+    { category: 'voice', model: 'microsoft/mai-transcribe-2-streaming', amount: 0.005 }
+  ] } }];
+  const ledger = { rows: [{ category: 'voice', model: 'microsoft/mai-transcribe-2', amount: 0.01 }] };
+  const result = getDisplayedCostStats(history, ledger, new Date('2026-09-15T12:00:00Z'));
+  assert.equal(result.voice, 0.015);
+});

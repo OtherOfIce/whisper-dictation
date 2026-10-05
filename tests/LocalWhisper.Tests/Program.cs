@@ -13,6 +13,7 @@ internal static class Program
     {
         try
         {
+            if (args.Contains("--paste-only")) { PasteChecks.Run(Check); return; }
             if (args.Contains("--benchmark")) { Benchmark().GetAwaiter().GetResult(); return; }
             if (args.Contains("--mai-pause-benchmark")) { MaiPauseBenchmark.RunAsync().GetAwaiter().GetResult(); return; }
             if (args.Contains("--mai-dual-benchmark")) { MaiDualBenchmark.RunAsync(args).GetAwaiter().GetResult(); return; }
@@ -24,20 +25,32 @@ internal static class Program
                 return;
             }
             Gestures();
+            ShortcutChecks.Run(Check);
+            MicrophoneSelection();
             Api().GetAwaiter().GetResult();
             ParallelChecks().GetAwaiter().GetResult();
             Fallback().GetAwaiter().GetResult();
             XaiContract().GetAwaiter().GetResult();
+            StreamingChecks.RunAsync(Check).GetAwaiter().GetResult();
             CleanupChecks.RunAsync(Check).GetAwaiter().GetResult();
             VocabularyChecks.RunAsync(Check).GetAwaiter().GetResult();
             CorrectionLearningChecks();
             PauseSplitting();
             Pipeline().GetAwaiter().GetResult();
             CreditChecks().GetAwaiter().GetResult();
-            if (args.Contains("--desktop")) Desktop();
+            if (args.Contains("--desktop")) { Desktop(); PasteChecks.Run(Check); }
             Console.WriteLine($"PASS: {count} checks");
         }
         catch (Exception ex) { Console.Error.WriteLine(ex); Environment.ExitCode = 1; }
+    }
+    private static void MicrophoneSelection()
+    {
+        var devices = new[] { new MicrophoneDevice("usb-a", "Microphone", 1), new MicrophoneDevice("usb-b", "Microphone", 0) };
+        Check(MicrophoneDevices.Resolve("", []) == -1, "System default remains available without a saved device");
+        Check(MicrophoneDevices.Resolve("usb-a", devices) == 1, "Selected microphone follows its identity after device reordering");
+        Check(MicrophoneDevices.Resolve("USB-B", devices) == 0, "Equal device names do not confuse microphone identity");
+        try { MicrophoneDevices.Resolve("disconnected", devices); throw new Exception("Missing microphone was silently replaced"); }
+        catch (InvalidOperationException) { Check(true, "Disconnected selection does not silently use another microphone"); }
     }
     private static async Task CreditChecks()
     {
@@ -478,10 +491,6 @@ internal static class Program
         Check(uri.Query.Contains("model=grok-voice-transcribe-2.0") && uri.Query.Contains("sample_rate=16000")
             && uri.Query.Contains("encoding=pcm") && uri.Query.Contains("keyterm=Hashirama")
             && uri.Query.Contains("keyterm=Sea%20of%20Storms"), "Streaming configuration includes PCM format and every dictionary keyterm");
-        var source = new[] { Enumerable.Repeat((byte)1, 1280).ToArray(), Enumerable.Repeat((byte)2, 1280).ToArray(), Enumerable.Repeat((byte)3, 1280).ToArray() };
-        var frames = XaiTranscription.Frames(source).ToArray();
-        Check(frames.Length == 2 && frames[0].Length == 3200 && frames[1].Length == 640, "Forty-millisecond capture buffers are repacked into 100ms streaming frames without dropping the tail");
-        Check(frames.SelectMany(frame => frame).SequenceEqual(source.SelectMany(chunk => chunk)), "Streaming frame conversion preserves every PCM byte in order");
         try { XaiTranscription.ValidateKeyterms(Enumerable.Repeat("term", 101).ToArray()); throw new Exception("Expected keyterm limit"); }
         catch (InvalidOperationException) { Check(true, "Grok dictionary rejects more than 100 keyterms instead of silently dropping biasing"); }
         try { XaiTranscription.ValidateKeyterms([new string('x', 51)]); throw new Exception("Expected keyterm length limit"); }
@@ -503,11 +512,12 @@ internal static class Program
         using var emptyPartial = JsonDocument.Parse("{\"type\":\"transcript.partial\",\"is_final\":true,\"speech_final\":true}");
         using var tail = JsonDocument.Parse("{\"type\":\"transcript.done\",\"text\":\" and Raikage\",\"duration\":7.9}");
         using var textlessDone = JsonDocument.Parse("{\"type\":\"transcript.done\",\"duration\":7.9}");
-        Check(XaiStreamingSession.PartialFinalText(chunkFinal) == "Hashirama", "Locked streaming chunks are kept even with interim results off");
-        Check(XaiStreamingSession.PartialFinalText(interim) is null, "Mutable interim text is not kept as transcript");
-        Check(XaiStreamingSession.PartialFinalText(emptyPartial) is null, "Textless partial events contribute nothing");
-        Check(XaiStreamingSession.DoneText(tail) == "and Raikage", "The flushed tail is kept alongside streamed chunks");
-        Check(XaiStreamingSession.DoneText(textlessDone) is null, "A textless transcript.done falls back to streamed chunks instead of failing");
+        var grokProtocol = new LocalWhisper.Streaming.GrokStreamingProtocol("test-only", []);
+        Check(grokProtocol.Read(chunkFinal).Transcript, "Locked streaming chunks are kept even with interim results off");
+        grokProtocol.Read(interim);
+        Check(!grokProtocol.Read(emptyPartial).Transcript, "Textless partial events contribute nothing");
+        Check(grokProtocol.Read(tail).Text == "Hashirama and Raikage", "The flushed tail is kept alongside streamed chunks without mutable interim text");
+        Check(grokProtocol.Read(textlessDone).Text == "Hashirama and Raikage", "A textless transcript.done falls back to streamed chunks instead of failing");
         var stamped = new SessionMetrics { TranscriptionModel = TranscriptionModels.GrokStreaming, CleanupMode = CleanupService.LunaFast };
         stamped.Complete("Pasted");
         var snap = stamped.Snapshot();
@@ -527,6 +537,7 @@ internal static class Program
         form.Controls.Add(button); form.Controls.Add(field);
         form.Shown += async (_, _) =>
         {
+            var paste = new Paste(form);
             IDataObject? original = Clipboard.GetDataObject();
             try
             {
@@ -544,7 +555,7 @@ internal static class Program
                     Check(context.AfterText.StartsWith(", just as an example.", StringComparison.Ordinal), "Target context captures text after the selection");
                     field.Clear();
                     Clipboard.SetText("clipboard sentinel");
-                    Check(await Paste.IntoAsync("Hello, ä¸–ç•Œ!", form.Handle, default), "Native paste accepted");
+                    Check(await paste.IntoAsync("Hello, ä¸–ç•Œ!", form.Handle, default), "Native paste accepted");
                     await Task.Delay(50);
                     Check(field.Text == "Hello, ä¸–ç•Œ!", "Native paste inserts Unicode into focused field");
                     await Task.Delay(800);
@@ -554,14 +565,14 @@ internal static class Program
                     await Task.Delay(200);
                     Check(await TargetContext.AcceptsTextAsync(form.Handle, default) is false, "Window without editable focus refuses paste");
                     var refused = field.Text;
-                    Check(!await Paste.IntoAsync("nowhere to go", form.Handle, default, textTarget: TargetContext.AcceptsTextAsync), "Paste without editable focus is refused");
+                    Check(!await paste.IntoAsync("nowhere to go", form.Handle, default, textTarget: TargetContext.AcceptsTextAsync), "Paste without editable focus is refused");
                     Check(field.Text == refused, "Refused paste does not change text");
                     field.Focus();
                     await Task.Delay(200);
                 }
                 else Console.WriteLine("SKIP: Windows denied test-window focus; live paste requires an interactive launch.");
                 var before = field.Text;
-                Check(!await Paste.IntoAsync("wrong target", (nint)12345, default), "Focus mismatch blocks paste");
+                Check(!await paste.IntoAsync("wrong target", (nint)12345, default), "Focus mismatch blocks paste");
                 Check(field.Text == before, "Focus mismatch does not change text");
                 using var recorder = new Recorder();
                 recorder.Start();

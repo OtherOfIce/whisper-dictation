@@ -32,6 +32,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import helium314.keyboard.latin.whisper.SecureCredentialStore
 import helium314.keyboard.latin.whisper.WhisperManager
+import helium314.keyboard.latin.whisper.MicrophoneInput
 import helium314.keyboard.settings.Setting
 import helium314.keyboard.settings.preferences.ListPreference
 
@@ -71,6 +72,8 @@ fun WhisperSettingsScreen(onClickBack: () -> Unit, onClickDiagnostics: () -> Uni
     var failedRecordingPresent by remember { mutableStateOf(WhisperManager.failedRecording(context).isFile) }
     var raceMai by remember { mutableStateOf(prefs.getBoolean(WhisperManager.PREF_RACE_MAI, true)) }
     var lunaCleanup by remember { mutableStateOf(prefs.getBoolean(WhisperManager.PREF_LUNA_CLEANUP, false)) }
+    var secondaryMicrophone by remember { mutableStateOf(prefs.getBoolean(MicrophoneInput.PREF_SECONDARY, false)) }
+    val secondaryMicrophoneAvailable = remember { MicrophoneInput.secondaryDevice(context) != null }
 
     Scaffold(topBar = { @OptIn(ExperimentalMaterial3Api::class) TopAppBar(
         title = { Text(stringResource(R.string.whisper_settings_title)) }, navigationIcon = { BackButton(onClickBack) })
@@ -80,6 +83,18 @@ fun WhisperSettingsScreen(onClickBack: () -> Unit, onClickDiagnostics: () -> Uni
             TextButton(onClick = onClickDiagnostics) { Text("Recording diagnostics") }
             Text(if (permissionGranted) "Microphone access granted" else "Microphone access is required")
             if (!permissionGranted) Button(onClick = { permissionLauncher.launch(Manifest.permission.RECORD_AUDIO) }) { Text("Grant microphone access") }
+            Spacer(Modifier.height(12.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) {
+                    Text(stringResource(R.string.whisper_secondary_microphone_title), style = MaterialTheme.typography.titleSmall)
+                    Text(stringResource(if (secondaryMicrophoneAvailable) R.string.whisper_secondary_microphone_description
+                        else R.string.whisper_secondary_microphone_unavailable), style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = secondaryMicrophone, enabled = secondaryMicrophoneAvailable || secondaryMicrophone, onCheckedChange = {
+                    secondaryMicrophone = it
+                    prefs.edit { putBoolean(MicrophoneInput.PREF_SECONDARY, it) }
+                })
+            }
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(
                 value = apiKey, onValueChange = { apiKey = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
