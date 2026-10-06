@@ -45,6 +45,8 @@ To stop old project builds, rebuild everything, and launch the packaged Windows 
 Native tests: `dotnet run --project tests/LocalWhisper.Tests -c Release`.
 The UI tests use demo fixtures and do not make API requests. The native `--credits` diagnostic checks the saved key without printing credentials or monetary amounts. The optional `--benchmark` diagnostic makes paid requests with generated speech.
 
+The direct Meta Muse streaming experiment is isolated in `tools/muse-streaming-prototype`. Its default run is a no-network safety preview. See `tools/muse-streaming-prototype/README.md` before using the explicit `--live` mode. Protocol, pricing, credential, and lifecycle findings are recorded in `docs/muse-voice-transcribe-streaming-research.md`.
+
 The native engine communicates with Electron through private stdin/stdout pipes. Renderer windows are sandboxed with context isolation, restricted IPC commands, and no Node or network access. Keys are never returned to the renderer.
 
 See `docs/performance-investigation.md` for measured upload improvements. The prior WinForms build is retained in `dist/LocalWhisper` as a fallback.
