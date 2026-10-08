@@ -50,12 +50,29 @@ internal sealed class GlobalShortcut : IDisposable
     {
         Capturing = enabled; captureModifiers = captureKey = 0; down.Clear();
     }
+    // The hook can miss key-ups (hook timeout, secure desktop, lock screen, injected events), so
+    // `down` is re-checked against the physical keyboard on every key-down. Null disables the check.
+    internal Func<uint, bool>? IsKeyHeld { get; set; }
     public GlobalShortcut(bool noHook = false)
     {
         callback = OnKey;
         if (noHook) return;
+        IsKeyHeld = key => (Native.GetAsyncKeyState((int)key) & 0x8000) != 0;
         hook = Native.SetWindowsHookEx(13, callback, Native.GetModuleHandle(null), 0);
         if (hook == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+    // Call on the hook's thread after a lock, unlock, or resume, when key-ups were likely lost.
+    public void Reset()
+    {
+        bool was = Chord;
+        down.Clear(); suppressed.Clear(); captureModifiers = captureKey = 0;
+        if (was) Changed?.Invoke(false);
+    }
+    private void DropReleasedKeys(uint current)
+    {
+        if (IsKeyHeld is not { } held) return;
+        down.RemoveWhere(k => k != current && !held(k));
+        suppressed.RemoveWhere(k => k != current && !held(k));
     }
     private bool Chord => binding.Matches(down);
     private nint OnKey(int code, nint message, nint data)
@@ -77,6 +94,7 @@ internal sealed class GlobalShortcut : IDisposable
             return false;
         }
         bool was = Chord;
+        if (!up) DropReleasedKeys(key);
         if (up) down.Remove(key); else down.Add(key);
         if (Capturing)
         {

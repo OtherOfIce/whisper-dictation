@@ -76,6 +76,9 @@ internal sealed class EngineApp : ApplicationContext
                 if (!exiting) dispatcher.BeginInvoke(() => Apply(pressed ? gesture.Press(now) : gesture.Release(now)));
             };
             shortcut.EscapePressed += () => { if (!exiting) dispatcher.BeginInvoke(Cancel); };
+            // Key-ups are lost while the session is locked or the PC sleeps; forget held keys afterwards.
+            Microsoft.Win32.SystemEvents.SessionSwitch += (_, _) => ResetShortcut();
+            Microsoft.Win32.SystemEvents.PowerModeChanged += (_, _) => ResetShortcut();
         }
         timer.Tick += (_, _) =>
         {
@@ -500,6 +503,11 @@ internal sealed class EngineApp : ApplicationContext
         recordingStage?.Dispose(); recordingStage = null; metrics?.Complete("Cancelled"); metrics = null;
         operation?.Dispose(); operation = null; session = null; insertionContext = null; gesture.Reset();
         if (capture is not null) _ = Task.Run(capture.Dispose);
+    }
+    private void ResetShortcut()
+    {
+        // System events arrive on another thread; the hook state belongs to the UI thread.
+        if (!exiting) try { dispatcher.BeginInvoke(() => shortcut?.Reset()); } catch (ObjectDisposedException) { }
     }
     protected override void ExitThreadCore()
     {

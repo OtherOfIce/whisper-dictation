@@ -57,5 +57,33 @@ internal static class ShortcutChecks
         hook.Configure(new ShortcutBinding(3, 0));
         hook.ProcessKey(0xA2, false); hook.ProcessKey(0xA4, false); hook.ProcessKey(0xA2, true); hook.ProcessKey(0xA4, true);
         check(transitions.TakeLast(2).SequenceEqual(new[] { true, false }), "Rebound modifier-only shortcut keeps press and release behavior");
+
+        // A missed Ctrl key-up must not turn a lone Win press into Ctrl + Win.
+        hook.Configure(ShortcutBinding.Default);
+        var held = new HashSet<uint>();
+        hook.IsKeyHeld = held.Contains;
+        var before = transitions.Count;
+        held.Add(0xA2); hook.ProcessKey(0xA2, false);
+        held.Remove(0xA2); // key-up never delivered to the hook
+        held.Add(0x5B);
+        check(!hook.ProcessKey(0x5B, false) && transitions.Count == before, "Lone Win after a missed Ctrl release does not start dictation");
+        held.Add(0x31);
+        hook.ProcessKey(0x31, false);
+        check(transitions.Count == before, "Win + 1 after a missed Ctrl release does not start dictation");
+        hook.ProcessKey(0x31, true); hook.ProcessKey(0x5B, true); held.Clear();
+        held.Add(0xA2); hook.ProcessKey(0xA2, false); held.Add(0x5B); hook.ProcessKey(0x5B, false);
+        check(transitions.Count == before + 1 && transitions[^1], "Genuinely held Ctrl + Win still starts dictation");
+        // Ctrl released while the hook was blind; the next key-down ends the stuck hold.
+        held.Remove(0xA2);
+        hook.ProcessKey(0x31, false);
+        check(transitions.Count == before + 2 && !transitions[^1], "Stale chord ends once a key is no longer physically held");
+        hook.ProcessKey(0x31, true); hook.ProcessKey(0x5B, true); held.Clear();
+        hook.ProcessKey(0xA2, false); held.Add(0xA2);
+        hook.Reset();
+        held.Add(0x5B);
+        hook.ProcessKey(0x5B, false);
+        check(transitions.Count == before + 2, "Reset forgets keys held before a lock or sleep");
+        hook.ProcessKey(0x5B, true); held.Clear();
+        hook.IsKeyHeld = null;
     }
 }
