@@ -77,6 +77,21 @@ exports.run = async ({ main, overlay, learning, app, engineEvent, testOverlayAct
   await evaluate(`document.querySelector('[aria-label="Show performance"]').click()`); await wait(200);
   assert.equal(await evaluate('document.querySelectorAll("[data-stage=Recording]").length'), 0);
   assert.equal(await evaluate('document.getElementById("latency-value").textContent'), '1.36 s');
+  const originalPerformanceMetrics = history[0].metrics;
+  engineEvent({ type: 'metricsUpdated', id: history[0].id, metrics: { ...originalPerformanceMetrics, streamingAttempts: [{
+    model: 'microsoft/mai-transcribe-2-streaming', startedMs: 0, connectedMs: 100,
+    firstTranscriptMs: 400, lastTranscriptMs: 18000, transcriptEvents: 20,
+    inputCompletedMs: 18432, endedMs: 48432, outcome: 'Failed', failureStage: 'finalize'
+  }] } });
+  await wait(100);
+  const streamingFacts = await evaluate('document.getElementById("timing-facts").textContent');
+  assert(streamingFacts.includes('Failed while waiting for the completed transcript'));
+  assert(streamingFacts.includes('400 ms before Stop'));
+  assert(streamingFacts.includes('30.00 s after audio was sent'));
+  assert(await evaluate('document.getElementById("timing-facts").scrollWidth <= document.getElementById("timing-facts").clientWidth'));
+  engineEvent({ type: 'metricsUpdated', id: history[0].id, metrics: originalPerformanceMetrics });
+  await wait(100);
+  assert(!(await evaluate('document.getElementById("timing-facts").textContent')).includes('Stream 1'));
   await fs.writeFile(path.join(directory, 'performance.png'), (await main.webContents.capturePage()).toPNG());
   await evaluate('document.getElementById("include-recording").click()'); await wait(100);
   assert.equal(await evaluate('document.querySelectorAll("[data-stage=Recording]").length'), 1);

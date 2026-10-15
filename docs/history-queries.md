@@ -33,6 +33,17 @@ Only `Pasted` outcomes with valid stop and paste timestamps enter the summary. S
 
 Do not sum `Transcribe audio` rows. MAI race requests overlap, and the losing request can continue after cleanup begins or after paste. Streaming and pause chunks can run while the user speaks. Elapsed stage boundaries avoid double counting that background work.
 
+## Streaming diagnostics
+
+New streaming sessions include a `streamingAttempts` array in the encrypted metrics and timing export. Each live or replayed streaming attempt has its own entry, so recorded-audio recovery cannot overwrite the original stream's evidence. Older history has no entries and cannot reconstruct this information.
+
+- `model`, `startedMs`, and `connectedMs` identify the attempt and connection timing. For MAI, connected means the gateway WebSocket connected and its start message was sent; it does not prove Azure accepted the session. Receiving text does prove transcription made progress.
+- `firstTranscriptMs`, `lastTranscriptMs`, and `transcriptEvents` track non-empty intermediate text events, including finalized segments. The terminal completion event does not update these fields. They measure arriving events, not unique words or changes to the transcript; repeated text still counts.
+- `inputCompletedMs` records when the remaining audio and end-of-input message were sent. `endedMs` records completion, failure, or cancellation, before recovery begins.
+- `outcome` is `Streaming`, `Completed`, `Failed`, or `Cancelled`. Failed attempts record `failureStage`: `connect`, `stream` (sending/receiving, including sending end-of-input), or `finalize` (waiting for the completed transcript after sending finishes). The existing `fallbacks` retain safe error messages. Cancellation is not classified as provider failure.
+
+All timestamps use the session clock, just like `stopMs`. History's performance drawer shows the last intermediate text relative to Stop, time without further text before the attempt ended, and the wait after sending audio. A long gap before Stop is evidence of no text events, not proof of a provider stall: silence and provider segmentation can also cause gaps. These diagnostics store no additional transcript text, raw provider messages, or credentials, and do not change timeout or recovery behavior.
+
 `transcriptionPct`, `cleanupPct` and `otherPct` divide each session's duration by that session's stop-to-paste duration. Their means and medians summarize those per-session shares. Independently calculated medians need not sum to 100%. `transcriptionOfTwoStagesPct` and `cleanupOfTwoStagesPct` omit paste overhead and sum to 100% per session. `weightedShares` divides summed stage durations by summed stop-to-paste durations; it gives long sessions more weight. Mean and median absolute times are calculated independently of percentage summaries.
 
 ## Measured week ending 3 October 2026

@@ -34,6 +34,9 @@ internal static class StreamingChecks
                 && socket.Pcm.Last().Length == source.Length % (grok ? 3200 : 1280), "Provider frame sizes preserve the incomplete final frame");
             check(socket.DoneCount == 1 && socket.Disposed && session.Completed == 1, "Streaming ends input once and disposes the socket");
             check(metrics.Snapshot().FirstTranscriptMs is not null, "Streaming records the first transcript timing");
+            check(metrics.Snapshot().StreamingAttempts.Single() is
+                { Outcome: "Completed", ConnectedMs: not null, LastTranscriptMs: not null, InputCompletedMs: not null, TranscriptEvents: 1 },
+                "Both streaming providers record intermediate progress separately from terminal completion");
             if (!grok)
             {
                 check(socket.Protocols.SequenceEqual(["ai-gateway-transcription.v1", "ai-gateway-auth.test-only"]), "Gateway uses the verified authentication subprotocols");

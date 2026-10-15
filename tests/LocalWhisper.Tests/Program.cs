@@ -32,6 +32,7 @@ internal static class Program
             Fallback().GetAwaiter().GetResult();
             XaiContract().GetAwaiter().GetResult();
             StreamingChecks.RunAsync(Check).GetAwaiter().GetResult();
+            StreamingDiagnosticsChecks.RunAsync(Check).GetAwaiter().GetResult();
             CleanupChecks.RunAsync(Check).GetAwaiter().GetResult();
             VocabularyChecks.RunAsync(Check).GetAwaiter().GetResult();
             CorrectionLearningChecks();

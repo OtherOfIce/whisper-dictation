@@ -8,12 +8,25 @@ public sealed record HedgeEvent(double CutoffMs, int WinnerAttempt, double Winne
 public sealed record ParallelRequestEvent(string RaceId, int Attempt, string Model, double DurationMs, string Outcome, bool Selected);
 public sealed record RequestEvent(string Model, double DurationMs, string Outcome);
 public sealed record FallbackEvent(string Model, string Error);
+// Timings only: intermediate transcript text and provider payloads are never stored here.
+public sealed record StreamingAttempt(string Model, double StartedMs)
+{
+    public double? ConnectedMs { get; init; }
+    public double? FirstTranscriptMs { get; init; }
+    public double? LastTranscriptMs { get; init; }
+    public int TranscriptEvents { get; init; }
+    public double? InputCompletedMs { get; init; }
+    public double? EndedMs { get; init; }
+    public string Outcome { get; init; } = "Streaming";
+    public string? FailureStage { get; init; }
+}
 public sealed record MetricsSnapshot(DateTime Started, string Outcome, double AudioSeconds, long AudioBytes, long RequestBytes,
     double ElapsedMs, double? StopMs, double? PasteMs, double MaxUiGapMs, TimingRow[] Rows, CostRow[] Costs, HedgeEvent[] Hedges,
     string TranscriptionModel, string CleanupMode, string RequestedTranscriptionModel, FallbackEvent[] Fallbacks,
     ParallelRequestEvent[] ParallelRequests, RequestEvent[] Requests)
 {
     public double? FirstTranscriptMs { get; init; }
+    public StreamingAttempt[] StreamingAttempts { get; init; } = [];
 }
 
 public sealed class SessionMetrics
@@ -26,6 +39,7 @@ public sealed class SessionMetrics
     private readonly List<FallbackEvent> fallbacks = [];
     private readonly List<ParallelRequestEvent> parallelRequests = [];
     private readonly List<RequestEvent> requests = [];
+    private readonly List<StreamingAttempt> streamingAttempts = [];
     private readonly List<Task> background = [];
     private readonly DateTime started = DateTime.Now;
     private double? stopMs, pasteMs;
@@ -54,6 +68,23 @@ public sealed class SessionMetrics
     }
     public void Stopped() { lock (gate) { stopMs ??= ElapsedMs; outcome = "Transcribing"; } }
     public void FirstTranscript() { lock (gate) firstTranscriptMs ??= ElapsedMs; }
+    internal int BeginStreaming(string model)
+    {
+        lock (gate)
+        {
+            streamingAttempts.Add(new(model, ElapsedMs));
+            return streamingAttempts.Count - 1;
+        }
+    }
+    internal void UpdateStreaming(int attempt, Func<StreamingAttempt, StreamingAttempt> update)
+    {
+        lock (gate)
+        {
+            // Shutdown can race a final receive; keep the evidence at the attempt's end.
+            if (streamingAttempts[attempt].EndedMs is null)
+                streamingAttempts[attempt] = update(streamingAttempts[attempt]);
+        }
+    }
     public void Hedge(double cutoffMs, int winnerAttempt, double winnerMs, double? loserMs, double? savedMs)
     {
         lock (gate) hedges.Add(new(cutoffMs, winnerAttempt, winnerMs, loserMs, savedMs));
@@ -84,7 +115,8 @@ public sealed class SessionMetrics
         lock (gate) return new(started, outcome, audioSeconds, audioBytes, requestBytes,
             Math.Max(finishedMs ?? ElapsedMs, stages.Count == 0 ? 0 : stages.Max(s => s.End ?? ElapsedMs)), stopMs, pasteMs, maxUiGap,
             stages.Select(s => new TimingRow(s.Name, s.Start, (s.End ?? ElapsedMs) - s.Start, s.End is null)).ToArray(), costs.ToArray(), hedges.ToArray(),
-            TranscriptionModel, CleanupMode, RequestedTranscriptionModel, fallbacks.ToArray(), parallelRequests.ToArray(), requests.ToArray()) { FirstTranscriptMs = firstTranscriptMs };
+            TranscriptionModel, CleanupMode, RequestedTranscriptionModel, fallbacks.ToArray(), parallelRequests.ToArray(), requests.ToArray())
+        { FirstTranscriptMs = firstTranscriptMs, StreamingAttempts = streamingAttempts.ToArray() };
     }
     private sealed class Stage(SessionMetrics owner, string name, double start) : IDisposable
     {

@@ -13,5 +13,7 @@
 .shortcut-controls, .microphone-test-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
 #shortcut-value { font-weight: 600; min-width: 120px; }
 #microphone-test-level { width: 180px; height: 18px; }
+#timing-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 25px; }
+#timing-facts > div { min-width: 0; overflow-wrap: anywhere; }
 
 .privacy-section details p{margin:12px 0}.privacy-section a{color:#59634d;text-underline-offset:3px}.privacy-section a:focus-visible{outline:2px solid #96907a;outline-offset:3px}.privacy-section strong{font-weight:600;color:#64685d}

@@ -13,6 +13,7 @@ internal sealed class StreamingSession : ITranscriptionSession
     private readonly Func<IStreamingTransport> transportFactory;
     private readonly long queueLimit;
     private readonly TimeSpan connectTimeout, finishTimeout;
+    private readonly int diagnosticAttempt;
     private readonly Task<string> worker;
     private long queuedBytes, audioBytes;
     private int count, completed, inputSent;
@@ -33,6 +34,7 @@ internal sealed class StreamingSession : ITranscriptionSession
         this.connectTimeout = connectTimeout ?? TimeSpan.FromSeconds(15);
         this.finishTimeout = finishTimeout ?? TimeSpan.FromSeconds(30);
         lifetime = CancellationTokenSource.CreateLinkedTokenSource(token);
+        diagnosticAttempt = metrics.BeginStreaming(protocol.Model);
         worker = Task.Run(RunAsync);
         _ = worker.ContinueWith(task => _ = task.Exception, TaskContinuationOptions.OnlyOnFaulted);
     }
@@ -73,6 +75,7 @@ internal sealed class StreamingSession : ITranscriptionSession
     {
         Task? send = null; Task<string>? receive = null;
         var token = lifetime.Token;
+        var phase = "connect";
         try
         {
             using var transport = transportFactory();
@@ -84,6 +87,8 @@ internal sealed class StreamingSession : ITranscriptionSession
                 catch (OperationCanceledException) when (!token.IsCancellationRequested)
                 { throw new TimeoutException("Streaming transcription did not connect in time."); }
             }
+            metrics.UpdateStreaming(diagnosticAttempt, attempt => attempt with { ConnectedMs = metrics.ElapsedMs });
+            phase = "stream";
             receive = ReceiveAsync(transport, token);
             send = SendAsync(transport, token);
             if (await Task.WhenAny(send, receive).ConfigureAwait(false) == receive)
@@ -94,22 +99,30 @@ internal sealed class StreamingSession : ITranscriptionSession
                     throw new InvalidDataException("Streaming provider completed before all audio was sent.");
             }
             await send.ConfigureAwait(false);
+            phase = "finalize";
             string text;
             using (metrics.Measure("Finalize streaming transcript"))
                 try { text = await receive.WaitAsync(finishTimeout, token).ConfigureAwait(false); }
                 catch (TimeoutException) { throw new TimeoutException("Streaming provider did not return the completed transcript in time."); }
             if (string.IsNullOrWhiteSpace(text)) throw new InvalidDataException("Streaming provider returned no transcript.");
             callerToken.ThrowIfCancellationRequested();
+            metrics.UpdateStreaming(diagnosticAttempt, attempt => attempt with { EndedMs = metrics.ElapsedMs, Outcome = "Completed" });
             Interlocked.Exchange(ref completed, 1);
             metrics.Cost("voice", protocol.Model, Volatile.Read(ref audioBytes) / 32000m / 3600m * protocol.PricePerHour);
             return text;
         }
         catch (Exception ex)
         {
-            if (callerToken.IsCancellationRequested) throw new OperationCanceledException(callerToken);
+            if (callerToken.IsCancellationRequested)
+            {
+                metrics.UpdateStreaming(diagnosticAttempt, attempt => attempt with { EndedMs = metrics.ElapsedMs, Outcome = "Cancelled" });
+                throw new OperationCanceledException(callerToken);
+            }
             var safe = Failure ?? (ex is HttpRequestException or InvalidDataException or TimeoutException
                 ? ex : new HttpRequestException("Streaming transcription failed. Check your key, credit and connection."));
             Interlocked.CompareExchange(ref failure, safe, null);
+            metrics.UpdateStreaming(diagnosticAttempt, attempt => attempt with
+            { EndedMs = metrics.ElapsedMs, Outcome = "Failed", FailureStage = phase });
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(safe).Throw();
             throw;
         }
@@ -150,6 +163,7 @@ internal sealed class StreamingSession : ITranscriptionSession
         }
         Interlocked.Exchange(ref inputSent, 1);
         await protocol.CompleteInputAsync(transport, token).ConfigureAwait(false);
+        metrics.UpdateStreaming(diagnosticAttempt, attempt => attempt with { InputCompletedMs = metrics.ElapsedMs });
     }
     private async Task<string> ReceiveAsync(IStreamingTransport transport, CancellationToken token)
     {
@@ -158,6 +172,13 @@ internal sealed class StreamingSession : ITranscriptionSession
             using var message = await transport.ReceiveAsync(token).ConfigureAwait(false);
             var update = protocol.Read(message);
             if (update.Transcript) metrics.FirstTranscript();
+            // The finish event must not overwrite the last update received while streaming.
+            if (update.Transcript && !update.Completed)
+            {
+                var now = metrics.ElapsedMs;
+                metrics.UpdateStreaming(diagnosticAttempt, attempt => attempt with
+                { FirstTranscriptMs = attempt.FirstTranscriptMs ?? now, LastTranscriptMs = now, TranscriptEvents = attempt.TranscriptEvents + 1 });
+            }
             if (update.Completed)
             {
                 if (Volatile.Read(ref inputSent) == 0)

@@ -445,6 +445,7 @@ async function renderPerformance() {  const id = selectedId;
     $('timing-note').textContent = $('include-recording').checked ? 'Full session, including time spent speaking and clipboard cleanup.' : `Recording time and clipboard cleanup are excluded.${chart.completedEarly ? ` ${chart.completedEarly} stages finished before Stop.` : ''}`;
     const facts = [['Audio length', `${metrics.audioSeconds.toFixed(1)} s`], ['Request size', `${(metrics.requestBytes / 1024).toFixed(0)} KB`], ['Longest UI gap', `${metrics.maxUiGapMs.toFixed(0)} ms`]];
     if (metrics.firstTranscriptMs != null) facts.push(['First transcript', formatDuration(metrics.firstTranscriptMs)]);
+    facts.push(...streamingFacts(metrics, modelNames, formatDuration));
     facts.unshift(...pipelineFacts(metrics));
     for (const hedge of metrics.hedges ?? []) {
       facts.push(['Hedge fired', `after ${formatDuration(hedge.cutoffMs)}`]);
