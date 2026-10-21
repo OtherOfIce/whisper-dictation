@@ -27,6 +27,27 @@ internal static class CleanupChecks
             check(result.Text == "bat", "Cleanup returns only the context-fitted insertion");
         }
 
+        check(CleanupService.Prompt.StartsWith("Cleanup", StringComparison.Ordinal) && CleanupService.Prompt.Contains("\nPauses\n")
+            && CleanupService.Prompt.Contains("\nMisheard words\n"), "Cleanup loads the shared prompt file");
+
+        using (var vocabularyHttp = new HttpClient(new Handler(async (request, cancellation) =>
+        {
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellation));
+            using var input = JsonDocument.Parse(body.RootElement.GetProperty("messages")[1].GetProperty("content").GetString()!);
+            check(input.RootElement.GetProperty("dictation").GetString() == "Did Soul win?", "Cleanup labels dictation sent with vocabulary");
+            check(input.RootElement.GetProperty("vocabulary")[0].GetString() == "Sol", "Cleanup sends dictionary terms as vocabulary");
+            check(!input.RootElement.TryGetProperty("insertionContext", out _), "Cleanup omits empty insertion context");
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"choices\":[{\"message\":{\"content\":\"Did Sol win?\"}}]}")
+            };
+        })))
+        {
+            var result = await new CleanupService(vocabularyHttp, ["Sol"]).CleanupAsync("Did Soul win?", InsertionContext.Empty,
+                "test-only", CleanupServiceTier.Standard, default);
+            check(result.Text == "Did Sol win?", "Cleanup with vocabulary returns the cleaned text");
+        }
+
         using (var leakingContext = new HttpClient(new Handler((_, _) => Task.FromResult(
             new HttpResponseMessage(HttpStatusCode.OK)
             {
