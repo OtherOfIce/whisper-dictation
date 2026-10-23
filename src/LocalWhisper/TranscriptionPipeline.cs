@@ -37,12 +37,12 @@ internal sealed class TranscriptionPipeline(HttpClient http, TranscriptionCreden
             _ => throw new InvalidOperationException("Choose a streaming model.")
         }, metrics, token, streamingTransportFactory);
 
-    internal ModelTranscription Recorded(SessionMetrics metrics, IReadOnlyList<string> dictionary) =>
-        new((model, audio, format, terms, token) => TranscribeRecordedAsync(model, audio, format, terms, metrics, token),
+    internal ModelTranscription Recorded(SessionMetrics metrics, IReadOnlyList<string> dictionary, bool doubleTranscription = false) =>
+        new((model, audio, format, terms, token) => TranscribeRecordedAsync(model, audio, format, terms, metrics, token, doubleTranscription),
             model => Available(model, dictionary));
 
     private async Task<string> TranscribeRecordedAsync(string model, byte[] audio, string format,
-        IReadOnlyList<string> dictionary, SessionMetrics metrics, CancellationToken token)
+        IReadOnlyList<string> dictionary, SessionMetrics metrics, CancellationToken token, bool doubleTranscription)
     {
         if (model == TranscriptionModels.MaiStreaming)
         {
@@ -56,7 +56,7 @@ internal sealed class TranscriptionPipeline(HttpClient http, TranscriptionCreden
         if (model == TranscriptionModels.GrokStreaming)
             return await new XaiBatchTranscriber(http).TranscribeAsync(encoded.Bytes, encoded.Format, credentials.Xai, dictionary, metrics, token).ConfigureAwait(false);
         return await new Transcriber(http).TranscribeAsync(encoded.Bytes, credentials.OpenRouter, token, metrics,
-            "", encoded.Format, dictionary, model).ConfigureAwait(false);
+            "", encoded.Format, dictionary, model, doubleTranscription).ConfigureAwait(false);
     }
     private static (byte[] Bytes, string Format) Encode(byte[] audio, SessionMetrics metrics)
     {

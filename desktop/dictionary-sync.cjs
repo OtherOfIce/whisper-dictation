@@ -17,26 +17,36 @@ function applyChanges(terms, delta) {
   for (const term of delta.add) map.set(term.toLowerCase(), term);
   return normalize([...map.values()]);
 }
-function validateConnection(url, key) {
-  const parsed = new URL(url);
+function validateUrl(url) {
+  let parsed;
+  try { parsed = new URL(url); } catch { throw new Error('Enter your https://deployment.convex.site URL.'); }
   if (parsed.protocol !== 'https:' || parsed.port || !/^[a-z0-9-]+\.convex\.site$/.test(parsed.hostname) || parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname !== '/') throw new Error('Enter your https://deployment.convex.site URL.');
-  if (typeof key !== 'string' || key.length < 32 || key.length > 256 || !/^[A-Za-z0-9_-]+$/.test(key)) throw new Error('Use a sync key of 32–256 letters, numbers, underscores or hyphens.');
   return parsed.origin;
 }
+function validateConnection(url, key) {
+  const origin = validateUrl(url);
+  if (typeof key !== 'string' || key.length < 32 || key.length > 256 || !/^[A-Za-z0-9_-]+$/.test(key)) throw new Error('Use a sync key of 32–256 letters, numbers, underscores or hyphens.');
+  return origin;
+}
 
+// Syncs the dictionary. Signed in, it syncs the one list the account gives this device; otherwise it can still use
+// the older shared key. The account itself (token, grants) lives in account.cjs.
 class DictionarySync {
-  constructor({ file, crypto, readTerms, writeTerms, onStatus, fetchImpl = fetch }) {
-    Object.assign(this, { file, crypto, readTerms, writeTerms, onStatus, fetchImpl });
-    this.state = { url: '', key: '', base: [] }; this.queue = Promise.resolve(); this.running = null;
+  constructor({ file, crypto, account, readTerms, writeTerms, onStatus, fetchImpl = fetch }) {
+    Object.assign(this, { file, crypto, account, readTerms, writeTerms, onStatus, fetchImpl });
+    this.state = { url: '', key: '', base: [], list: null }; this.queue = Promise.resolve(); this.running = null;
   }
   status(message) {
     if (message !== undefined) this.lastMessage = message;
-    return { url: this.state.url, connected: !!this.state.key, message: this.lastMessage || (this.state.url ? 'Waiting to sync' : 'Sync is off') };
+    const signedIn = !!this.account?.session();
+    const { url, key } = this.state;
+    return { url, sharedKey: !signedIn && !!key, list: signedIn ? this.state.list : null, message: this.lastMessage || (signedIn || url ? 'Waiting to sync' : 'Sync is off') };
   }
   async load() {
     try {
-      this.state = JSON.parse(this.crypto.decryptString(await fs.readFile(this.file)));
-      if (this.state.url || this.state.key) validateConnection(this.state.url, this.state.key);
+      this.state = { url: '', key: '', base: [], list: null, ...JSON.parse(this.crypto.decryptString(await fs.readFile(this.file))) };
+      delete this.state.token; delete this.state.email; // from the email sign-in this replaced
+      if (this.state.key) validateConnection(this.state.url, this.state.key);
       normalize(this.state.base);
     }
     catch (error) { if (error.code !== 'ENOENT') { this.loadFailed = true; this.onStatus(this.status('Could not read sync settings')); } }
@@ -45,12 +55,21 @@ class DictionarySync {
     const bytes = this.crypto.encryptString(JSON.stringify(this.state));
     await fs.writeFile(this.file + '.tmp', bytes); await fs.rename(this.file + '.tmp', this.file);
   }
+  // Called when this device joins or leaves an account: the next sync starts from no shared history, so local terms
+  // are merged into the account's list rather than treated as deletions.
+  resetAccount() {
+    return this.enqueue(async () => {
+      this.state = { ...this.state, base: [], list: null }; this.lastMessage = '';
+      await this.persist(); this.loadFailed = false; this.onStatus(this.status());
+    });
+  }
   configure(url, key) {
     return this.enqueue(async () => {
+      if (this.account?.session()) throw new Error('Sign out before using a shared sync key.');
       const nextKey = key || this.state.key;
       const origin = url ? validateConnection(url, nextKey) : '';
       const previous = this.state;
-      this.state = { url: origin, key: origin ? nextKey : '', base: origin === previous.url && nextKey === previous.key ? previous.base : [] };
+      this.state = { url: origin, key: origin ? nextKey : '', base: origin === previous.url && nextKey === previous.key ? previous.base : [], list: null };
       try { await this.persist(); this.loadFailed = false; } catch (error) { this.state = previous; throw error; }
       this.onStatus(this.status(origin ? 'Waiting to sync' : 'Sync is off')); return this.status();
     });
@@ -59,19 +78,27 @@ class DictionarySync {
   sync() {
     if (this.running) return this.running;
     this.running = this.enqueue(async () => {
-      if (!this.state.key || this.loadFailed) return this.status();
+      const session = this.account?.session();
+      if (this.loadFailed || (!session && !this.state.key)) return this.status();
+      const list = session ? this.account.status().grants?.dictionary ?? null : null;
+      if (session && !list) return this.status('Dictionary sync is off for this device');
       this.onStatus(this.status('Syncing…'));
       try {
         const snapshot = normalize(this.readTerms());
-        const response = await this.fetchImpl(this.state.url + '/dictionary/sync', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.state.key}` },
+        // Moving to a different list replaces the local terms with that list; the old list stays on the server.
+        if (session && this.state.list && this.state.list !== list) this.state.base = snapshot;
+        const response = await this.fetchImpl((session?.url ?? this.state.url) + '/dictionary/sync', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.token ?? this.state.key}` },
           body: JSON.stringify(changes(this.state.base, snapshot)), signal: AbortSignal.timeout(15000), redirect: 'error'
         });
+        if (response.status === 401 && session) { await this.account.dropped(); this.state.base = []; this.state.list = null; await this.persist(); return this.status(''); }
         if (!response.ok) throw new Error(response.status === 401 ? 'Sync key was rejected' : 'Dictionary sync failed');
-        const remote = normalize((await response.json()).terms);
+        const reply = await response.json();
+        if (reply.off) return this.status('Dictionary sync is off for this device');
+        const remote = normalize(reply.terms);
         const merged = applyChanges(remote, changes(snapshot, this.readTerms()));
         if (JSON.stringify(merged) !== JSON.stringify(normalize(this.readTerms()))) await this.writeTerms(merged);
-        this.state.base = remote; await this.persist();
+        this.state.base = remote; this.state.list = session ? reply.list ?? list : null; await this.persist();
         const status = this.status('Synced'); this.onStatus(status); return status;
       } catch (error) {
         const status = this.status(`${error.message}. Local terms are saved; sync will retry.`); this.onStatus(status); return status;
@@ -80,4 +107,4 @@ class DictionarySync {
     return this.running;
   }
 }
-module.exports = { DictionarySync, normalize, changes, applyChanges, validateConnection };
+module.exports = { DictionarySync, normalize, changes, applyChanges, validateConnection, validateUrl };

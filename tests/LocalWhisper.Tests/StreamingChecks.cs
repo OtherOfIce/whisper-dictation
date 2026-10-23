@@ -52,6 +52,17 @@ internal static class StreamingChecks
             session.EnqueuePcm(new byte[1280]);
             await ExpectFailure(session.FinishAsync());
             check(session.Failed == 1 && socket.Disposed, $"Streaming {mode} fails instead of pasting provisional text and releases the socket");
+            if (mode == "error")
+                check(session.LastError!.Contains("[redacted] credential must not leak") && !session.LastError.Contains("test-only"),
+                    "Provider error detail reaches the failure reason with the credential redacted");
+        }
+        using (var gatewayError = JsonDocument.Parse("{\"type\":\"error\",\"error\":{\"code\":\"rate_limited\",\n \"message\":\"Too many sessions for test-only\"}}"))
+        {
+            var reason = "";
+            try { new GatewayStreamingProtocol("test-only").Read(gatewayError); }
+            catch (HttpRequestException ex) { reason = ex.Message; }
+            check(reason.Contains("rate_limited") && reason.Contains("Too many sessions for [redacted]") && !reason.Contains("test-only") && !reason.Contains('\n'),
+                "Gateway error objects are reported on one line with the credential redacted");
         }
 
         var blocked = new FakeTransport(false) { BlockConnect = true };

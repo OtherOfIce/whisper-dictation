@@ -102,6 +102,13 @@ internal static class Settings
     public static string LoadGatewayKey() => File.Exists(GatewayKeyFile) ? LoadProtected(GatewayKeyFile)
         : Environment.GetEnvironmentVariable("AI_GATEWAY_API_KEY") ?? "";
     public static void SaveGatewayKey(string key) => SaveProtected(GatewayKeyFile, key);
+    // Keys the user saved. The Load methods above also fall back to environment variables, which are not synced.
+    public static string? StoredKey() => File.Exists(KeyFile) ? LoadProtected(KeyFile) : null;
+    public static string? StoredXaiKey() => File.Exists(XaiKeyFile) ? LoadProtected(XaiKeyFile) : null;
+    public static string? StoredGatewayKey() => File.Exists(GatewayKeyFile) ? LoadProtected(GatewayKeyFile) : null;
+    public static void ClearKey() => File.Delete(KeyFile);
+    public static void ClearXaiKey() => File.Delete(XaiKeyFile);
+    public static void ClearGatewayKey() => File.Delete(GatewayKeyFile);
     private static string LoadProtected(string path) =>
         Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(path), null, DataProtectionScope.CurrentUser));
     private static void SaveProtected(string path, string key)

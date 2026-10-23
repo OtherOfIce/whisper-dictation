@@ -16,6 +16,7 @@ import helium314.keyboard.latin.settings.Settings
 import helium314.keyboard.latin.utils.prefs
 import kotlinx.coroutines.*
 import java.io.File
+import java.io.IOException
 import org.json.JSONObject
 
 private const val TAG = "WhisperManager"
@@ -26,15 +27,18 @@ class WhisperManager @JvmOverloads constructor(
     private val recorder: AudioRecorder = AudioRecorder(context),
     private val client: OpenRouterClient = OpenRouterClient(),
     private val credentials: SecureCredentialStore = SecureCredentialStore(context),
+    private val gatewayCredentials: SecureCredentialStore = SecureCredentialStore(context, "gateway"),
+    private val streamingFactory: (String, String) -> GatewayStreamingSession = { key, language -> GatewayStreamingSession(key, language) },
 ) {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     init {
         scope.launch {
-            while (isActive) { DictionarySync.sync(context.applicationContext); delay(60_000) }
+            while (isActive) { Account.syncAll(context.applicationContext); delay(60_000) }
         }
     }
     private var job: Job? = null
     private var recordingFile: File? = null
+    private var liveSession: GatewayStreamingSession? = null
     private val failedRecording = File(context.noBackupFilesDir, "failed-dictation.wav")
     private var operationId = 0L
     private var editorSessionToken = -1L
@@ -77,12 +81,18 @@ class WhisperManager @JvmOverloads constructor(
             secureInput -> "Voice input is disabled for secure fields"
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED -> "Grant microphone access in Local Whisper Keyboard settings"
             !credentials.isAvailable() -> "Unlock the device before using voice input"
-            !credentials.hasKey() -> "Add an OpenRouter API key in keyboard settings"
+            !credentials.hasKey() && streamingKey() == null -> "Add an OpenRouter API key in keyboard settings"
             else -> null
         }
         if (message != null) { Toast.makeText(context, message, Toast.LENGTH_LONG).show(); return }
         operationId++
-        if (!recorder.start()) { Toast.makeText(context, "Microphone unavailable", Toast.LENGTH_SHORT).show(); return }
+        // Live MAI starts streaming as soon as recording does; the recording is still kept for fallback and retry.
+        val session = streamingKey()?.let { key -> runCatching { streamingFactory(key, language()) }.getOrNull() }
+        if (!recorder.start(session?.let { it::send })) {
+            session?.cancel()
+            Toast.makeText(context, "Microphone unavailable", Toast.LENGTH_SHORT).show(); return
+        }
+        liveSession = session
         if (context.prefs().getBoolean(DictationAudioService.PREF_PAUSE_MEDIA, true)) DictationAudioService.start(context)
         vibrate(50); onStateChanged?.invoke(RecordingState.RECORDING)
     }
@@ -93,8 +103,16 @@ class WhisperManager @JvmOverloads constructor(
         val file = recorder.stop()
         if (file == null) { DictationAudioService.stop(context); onStateChanged?.invoke(RecordingState.IDLE); return }
         recordingFile = file
-        startTranscription(file, false)
+        val session = liveSession; liveSession = null
+        startTranscription(file, false, session)
     }
+
+    private fun language() = context.prefs().getString(Settings.PREF_WHISPER_LANGUAGE, Defaults.PREF_WHISPER_LANGUAGE) ?: "auto"
+    private fun selectedModel() = context.prefs().getString(Settings.PREF_WHISPER_TRANSCRIPTION_MODEL, Defaults.PREF_WHISPER_TRANSCRIPTION_MODEL)
+        ?: Defaults.PREF_WHISPER_TRANSCRIPTION_MODEL
+    /** The Vercel AI Gateway key, when live MAI is selected and one is saved. */
+    private fun streamingKey(): String? =
+        if (selectedModel() == GatewayStreamingSession.MODEL) gatewayCredentials.load()?.takeIf { it.isNotBlank() } else null
 
     private fun retryFailed() {
         if (secureInput) {
@@ -105,11 +123,13 @@ class WhisperManager @JvmOverloads constructor(
         startTranscription(failedRecording, true)
     }
 
-    private fun startTranscription(file: File, retry: Boolean) {
+    private fun startTranscription(file: File, retry: Boolean, live: GatewayStreamingSession? = null) {
         val requestOperation = operationId
         val requestSession = editorSessionToken
-        val apiKey = credentials.load()
-        if (apiKey.isNullOrBlank()) {
+        val apiKey = credentials.load()?.takeIf { it.isNotBlank() }
+        val gatewayKey = streamingKey()
+        if (apiKey == null && gatewayKey == null) {
+            live?.cancel()
             if (retry) {
                 failedRecording.delete()
             } else {
@@ -123,14 +143,13 @@ class WhisperManager @JvmOverloads constructor(
             return
         }
         val prefs = context.prefs()
-        val language = prefs.getString(Settings.PREF_WHISPER_LANGUAGE, Defaults.PREF_WHISPER_LANGUAGE) ?: "auto"
-        val transcriptionModel = prefs.getString(Settings.PREF_WHISPER_TRANSCRIPTION_MODEL, Defaults.PREF_WHISPER_TRANSCRIPTION_MODEL)
-            ?: Defaults.PREF_WHISPER_TRANSCRIPTION_MODEL
+        val language = language()
+        val transcriptionModel = selectedModel()
         val dictionary = DictionaryLimits.validate(prefs.getString(Settings.PREF_WHISPER_DICTIONARY, "").orEmpty())
         if (dictionary.error != null) Toast.makeText(context, "Preferred terms are invalid; continuing without hints", Toast.LENGTH_LONG).show()
         val keywords = dictionary.keywords
         val raceMai = prefs.getBoolean(PREF_RACE_MAI, true)
-        val cleanup = prefs.getBoolean(PREF_LUNA_CLEANUP, false)
+        val cleanup = prefs.getBoolean(PREF_LUNA_CLEANUP, false) && apiKey != null
         val logStore = if (RecordingLogStore.enabled(context)) RecordingLogStore.forContext(context) else null
         val capture = if (retry) null else recorder.captureMetadata()
         transcribing = true; onStateChanged?.invoke(RecordingState.TRANSCRIBING)
@@ -141,6 +160,7 @@ class WhisperManager @JvmOverloads constructor(
             var finalTranscript: String? = null
             var outcome = "Cancelled"
             var errorType: String? = null
+            val route = JSONObject()
             val started = SystemClock.elapsedRealtime()
             try {
                 if (logStore != null) withContext(NonCancellable + Dispatchers.IO) {
@@ -152,13 +172,13 @@ class WhisperManager @JvmOverloads constructor(
                     }.onFailure { Log.w(TAG, "[DEBUG-audio] Could not save recording diagnostics") }
                 }
                 ensureActive()
-                val raw = client.transcribeWithFallback(file, apiKey, language, keywords, transcriptionModel, raceMai)
+                val raw = transcribe(file, apiKey, gatewayKey, live, language, keywords, transcriptionModel, raceMai, route)
                 rawTranscript = raw
                 if (cleanup) {
                     cleaning = true
                     onStateChanged?.invoke(RecordingState.CLEANING)
                 }
-                val text = if (cleanup) try { client.clean(raw, apiKey, keywords) } catch (error: Exception) {
+                val text = if (cleanup) try { client.clean(raw, apiKey!!, keywords) } catch (error: Exception) {
                     if (error is CancellationException) throw error
                     Log.w(TAG, "Luna cleanup failed; inserting original transcript", error)
                     withContext(Dispatchers.Main) {
@@ -186,9 +206,10 @@ class WhisperManager @JvmOverloads constructor(
                 }
             } finally {
                 withContext(NonCancellable + Dispatchers.IO) {
-                    logId?.let { id -> runCatching { logStore?.finish(id, outcome, rawTranscript, finalTranscript, SystemClock.elapsedRealtime() - started, errorType) }
+                    logId?.let { id -> runCatching { logStore?.finish(id, outcome, rawTranscript, finalTranscript, SystemClock.elapsedRealtime() - started, errorType, route) }
                         .onFailure { Log.w(TAG, "[DEBUG-audio] Could not finish recording diagnostics") } }
                 }
+                live?.cancel()
                 if (succeeded) failedRecording.delete()
                 if (!retry) file.delete()
                 if (operationId == requestOperation) {
@@ -198,6 +219,31 @@ class WhisperManager @JvmOverloads constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Live MAI uses the session that streamed during recording (or streams a saved recording on retry). If it fails,
+     * the recording goes to MAI Clean and then GPT-Transcribe through OpenRouter, as on the desktop.
+     */
+    private suspend fun transcribe(file: File, apiKey: String?, gatewayKey: String?, live: GatewayStreamingSession?, language: String,
+                                   keywords: List<String>, model: String, raceMai: Boolean, route: JSONObject): String {
+        if (model != GatewayStreamingSession.MODEL) {
+            route.put("usedModel", model)
+            return client.transcribeWithFallback(file, apiKey ?: throw IOException("No OpenRouter API key"), language, keywords, model, raceMai)
+        }
+        if (gatewayKey != null) {
+            try {
+                val session = live ?: withContext(Dispatchers.IO) { streamingFactory(gatewayKey, language).also { it.replay(file) } }
+                route.put("usedModel", model).put("live", live != null)
+                return session.finish()
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                Log.w(TAG, "Live MAI failed; using the recording instead: ${error.message}")
+                route.put("streamingError", error.message ?: error.javaClass.simpleName)
+            }
+        } else route.put("streamingError", "No Vercel AI Gateway key")
+        route.put("usedModel", "mai-transcribe-2-clean")
+        return client.transcribeWithFallback(file, apiKey ?: throw IOException("No OpenRouter API key for the fallback"), language, keywords, "mai-transcribe-2-clean", raceMai)
     }
 
     private fun retainFailed(file: File) {
@@ -213,6 +259,7 @@ class WhisperManager @JvmOverloads constructor(
         val wasActive = recorder.isActive || transcribing
         operationId++; recorder.cancel()
         DictationAudioService.stop(context)
+        liveSession?.cancel(); liveSession = null
         val activeJob = job
         activeJob?.cancel(); job = null
         if (activeJob == null) recordingFile?.delete()

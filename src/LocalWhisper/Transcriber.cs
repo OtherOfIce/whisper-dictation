@@ -188,7 +188,7 @@ public sealed class Transcriber(HttpClient client)
                 if (completed == fallbackTimer)
                 {
                     fallbackTimer = null;
-                    if (pending.Count == 2 && pending.All(task => !task.IsCompleted))
+                    if (pending.Count > 0)
                         pending.Add(Start(3, TranscriptionModels.Gpt, BuildPayload(audio, format, dictionary, TranscriptionModels.Gpt)));
                     continue;
                 }
@@ -201,7 +201,7 @@ public sealed class Transcriber(HttpClient client)
                     if (result.Model == TranscriptionModels.Gpt)
                     {
                         if (metrics is not null) metrics.TranscriptionModel = TranscriptionModels.Gpt;
-                        metrics?.Fallback(model, "Both parallel MAI requests were slow; GPT finished first.");
+                        metrics?.Fallback(model, "Parallel MAI requests were slow or failed; GPT finished first.");
                     }
                     foreach (var registration in registrations) registration.Dispose();
                     var remaining = Task.WhenAll(requests);
@@ -211,7 +211,13 @@ public sealed class Transcriber(HttpClient client)
                     return text;
                 }
                 failure = result.Error;
-                fallbackTimer = null; // A failed request is no longer a slow request.
+                // A failed MAI request must not remove the safety net for its stalled sibling.
+                // If both fail, try GPT immediately rather than ending the race.
+                if (pending.Count == 0 && fallbackTimer is not null)
+                {
+                    fallbackTimer = null;
+                    pending.Add(Start(3, TranscriptionModels.Gpt, BuildPayload(audio, format, dictionary, TranscriptionModels.Gpt)));
+                }
             }
             throw failure ?? new InvalidDataException("Every parallel transcription request failed.");
         }

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from '../convex/http.js';
 
-const handler = http.getRoutes()[0][2]._handler;
+const handler = http.getRoutes().find(route => route[0] === '/dictionary/sync')[2]._handler;
 const key = 'test_key_'.repeat(4);
 test('HTTP endpoint rejects unauthenticated requests and only passes dictionary changes', async () => {
   const previous = process.env.DICTIONARY_SYNC_KEY;

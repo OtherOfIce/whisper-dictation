@@ -11,6 +11,8 @@ const { getWordStats, getDisplayedCostStats } = require('./stats.cjs');
 const { readWisprDictionary } = require('./wispr-dictionary.cjs');
 const { startAutoUpdates } = require('./updater.cjs');
 const { DictionarySync } = require('./dictionary-sync.cjs');
+const { ItemSync, itemValuesFromEngine, engineChangesFromItems } = require('./item-sync.cjs');
+const { Account } = require('./account.cjs');
 const { definition: modelDefinition, validateModelDictionary } = require('./transcription-models.cjs');
 const testMode = process.argv.includes('--ui-test');
 const startupMode = process.argv.includes('--startup');
@@ -20,15 +22,19 @@ if (!app.requestSingleInstanceLock()) { app.quit(); }
 else {
   let main, overlay, learning, tray, engine, quitting = false, state = { mode: 'Idle' }, history = [], historyError = false;
   const testOverlayActions = [];
-  let nextId = 0, settings = {}, balance = null, costLedger = null, refreshPromise, saveQueue = Promise.resolve(), updateReadyVersion = null;
+  let nextId = 0, settings = {}, balance = null, gatewayBalance = null, gatewayRefreshPromise, costLedger = null, refreshPromise, saveQueue = Promise.resolve(), updateReadyVersion = null;
   const pending = new Map();
   const learningToasts = new Map();
   const currentCosts = () => getDisplayedCostStats(history, costLedger);
   const historyPath = () => path.join(app.getPath('userData'), 'history.sqlite');
   const historyStore = new HistoryStore(historyPath(), safeStorage, path.join(app.getPath('userData'), 'history.bin'));
   const broadcast = value => { for (const win of [main, overlay]) if (win && !win.isDestroyed()) win.webContents.send('event', value); };
+  const account = new Account({
+    file: path.join(app.getPath('userData'), 'account.bin'), crypto: safeStorage,
+    onChange: () => broadcastAccount()
+  });
   const dictionarySync = new DictionarySync({
-    file: path.join(app.getPath('userData'), 'dictionary-sync.bin'), crypto: safeStorage,
+    file: path.join(app.getPath('userData'), 'dictionary-sync.bin'), crypto: safeStorage, account,
     readTerms: () => settings.dictionaryTerms || [],
     writeTerms: async dictionaryTerms => {
       if (state.mode !== 'Idle') throw new Error('Finish recording to receive dictionary changes');
@@ -36,8 +42,42 @@ else {
       settings = testMode ? { ...settings, dictionaryTerms } : await send('saveDictionary', { dictionaryTerms, preserveLearning: true, expectedDictionaryTerms: settings.dictionaryTerms || [] });
       broadcast({ type: 'dictionarySynced', settings });
     },
-    onStatus: sync => broadcast({ type: 'dictionarySyncStatus', sync })
+    onStatus: () => broadcastAccount()
   });
+  // Settings and API keys follow the account. Keys are sealed here, in the main process; the renderer never receives them.
+  async function readSyncState() {
+    return itemValuesFromEngine(testMode
+      ? { settings: { transcriptionModel: settings.transcriptionModel, cleanupMode: settings.cleanupMode, raceMai: settings.doubleTranscription }, secrets: {} }
+      : await send('syncState'));
+  }
+  // Returns the names it could not apply (for example while recording); they are retried on the next sync.
+  async function writeSyncState(changes) {
+    if (state.mode !== 'Idle') return Object.keys(changes);
+    const { payload, refused } = engineChangesFromItems(changes);
+    if (testMode) return refused;
+    const result = await send('applySyncState', payload);
+    settings = result.settings; broadcast({ type: 'settings', settings });
+    if (Object.keys(payload.secrets).length) refreshCredits();
+    return [...refused, ...result.rejected];
+  }
+  const itemSync = new ItemSync({
+    file: path.join(app.getPath('userData'), 'account-items.bin'), crypto: safeStorage,
+    account, local: { read: readSyncState, write: writeSyncState },
+    onStatus: () => broadcastAccount()
+  });
+  const accountStatus = () => ({ account: account.status(), dictionary: dictionarySync.status(), items: itemSync.status() });
+  const broadcastAccount = () => broadcast({ type: 'dictionarySyncStatus', sync: accountStatus() });
+  // Items first: their reply carries this device's current grants, which say which dictionary list to sync.
+  const syncAccount = () => itemSync.sync().then(() => dictionarySync.sync()).then(accountStatus);
+  // Joining or leaving an account starts both syncs from scratch, so local values merge instead of looking deleted.
+  async function joined() { await itemSync.forget(); await dictionarySync.resetAccount(); return syncAccount(); }
+  const text = (value, limit = 256) => typeof value === 'string' && value.length <= limit ? value : null;
+  function grantsFrom(value) {
+    if (!value || typeof value.secrets !== 'boolean' || typeof value.settings !== 'boolean') throw new Error('Choose what this device syncs.');
+    const dictionary = value.dictionary === null ? null : text(value.dictionary, 30)?.trim();
+    if (dictionary === undefined || (dictionary !== null && !/^[A-Za-z0-9][A-Za-z0-9 _-]{0,29}$/.test(dictionary))) throw new Error('Dictionary list names use letters, numbers, spaces, hyphens or underscores (up to 30).');
+    return { secrets: value.secrets, settings: value.settings, history: false, dictionary };
+  }
   function send(method, params = {}, timeoutMs = 16000) {
     return new Promise((resolve, reject) => {
       if (!engine || engine.killed || !engine.stdin.writable) return reject(new Error('Dictation engine is unavailable. Restart the app.'));
@@ -122,7 +162,7 @@ else {
       if (request) { clearTimeout(request.timeout); pending.delete(event.id); event.error ? request.reject(new Error(event.error)) : request.resolve(event.result); }
       return;
     }
-    if (event.type === 'ready') { settings = event.settings; refreshCredits(); dictionarySync.sync(); }
+    if (event.type === 'ready') { settings = event.settings; refreshCredits(); syncAccount(); }
     if (event.type === 'settings') settings = event.settings;
     if (event.type === 'dictionaryLearned') {
       settings = event.settings;
@@ -182,7 +222,21 @@ else {
     if (event.type === 'notice') { if (event.message === 'Focus changed. Your transcript is ready in History.') return; notify(event.message); return; }
     broadcast(event);
   }
+  async function refreshGatewayCredits() {
+    if (!settings.hasGatewayKey || settings.transcriptionModel !== 'mai-transcribe-2-streaming') {
+      gatewayBalance = null;
+      return null;
+    }
+    if (testMode) return gatewayBalance;
+    if (gatewayRefreshPromise) return gatewayRefreshPromise;
+    gatewayRefreshPromise = send('gatewayCredits')
+      .then(value => { gatewayBalance = value; broadcast({ type: 'gatewayBalance', balance: value }); return value; })
+      .catch(error => { broadcast({ type: 'gatewayBalanceError' }); return { error: error.message }; })
+      .finally(() => { gatewayRefreshPromise = null; });
+    return gatewayRefreshPromise;
+  }
   async function refreshCredits() {
+    refreshGatewayCredits();
     if (testMode) return balance;
     if (refreshPromise) return refreshPromise;
     refreshPromise = send('credits').then(value => { balance = value; broadcast({ type: 'balance', balance }); broadcast({ type: 'stats', stats: getWordStats(history), costs: currentCosts() }); return balance; })
@@ -257,7 +311,7 @@ else {
       return send(method, method === 'finish' ? { fromOverlay: true } : {});
     }
     switch (method) {
-      case 'initial': return { history, settings, balance, state, historyError, dictionarySync: dictionarySync.status(), stats: getWordStats(history), costs: currentCosts() };
+      case 'initial': return { history, settings, balance, gatewayBalance, state, historyError, dictionarySync: accountStatus(), stats: getWordStats(history), costs: currentCosts() };
       case 'microphones': return testMode ? settings.microphones || [] : send('microphones');
       case 'captureShortcut':
         if (typeof params?.enabled !== 'boolean') throw new Error('Invalid shortcut capture.');
@@ -274,10 +328,50 @@ else {
       case 'configureDictionarySync': {
         if (typeof params.url !== 'string' || typeof params.key !== 'string') throw new Error('Invalid sync settings.');
         await dictionarySync.configure(params.url.trim(), params.key.trim());
-        return dictionarySync.sync();
+        await dictionarySync.sync(); return accountStatus();
       }
-      case 'syncDictionary': return dictionarySync.sync();
+      case 'syncDictionary': return syncAccount();
+      case 'accountCreate':
+      case 'accountSignIn': {
+        const url = text(params?.url), username = text(params?.username), passphrase = text(params?.passphrase);
+        if (!url || !username || !passphrase) throw new Error('Enter your username and passphrase.');
+        try { await (method === 'accountCreate' ? account.createAccount(url.trim(), username, passphrase) : account.signIn(url.trim(), username, passphrase)); }
+        finally { params.passphrase = ''; }
+        return joined();
+      }
+      case 'accountPair': {
+        const url = text(params?.url), code = text(params?.code, 40);
+        if (!url || !code) throw new Error('Enter the pairing code from your desktop.');
+        await account.pair(url.trim(), code);
+        return joined();
+      }
+      case 'accountSignOut':
+        await account.signOut(); await itemSync.forget(); await dictionarySync.resetAccount();
+        return accountStatus();
+      case 'accountDevices': return testMode ? { devices: [{ id: 'd1', name: 'Desk', admin: true, hasKeys: true, current: true, lastSeen: Date.now(), grants: { secrets: true, settings: true, history: false, dictionary: 'Personal' } }, { id: 'd2', name: 'Work laptop', admin: false, hasKeys: false, current: false, lastSeen: Date.now() - 3 * 3600000, grants: { secrets: false, settings: true, history: false, dictionary: 'Work' } }], lists: ['Personal', 'Work'] } : account.listDevices();
+      case 'accountAddDevice': {
+        const name = text(params?.name, 60)?.trim();
+        if (!name) throw new Error('Name the device, for example Phone or Work laptop.');
+        return account.addDevice({ name, grants: grantsFrom(params.grants) });
+      }
+      case 'accountUpdateDevice': {
+        if (!text(params?.id, 64)) throw new Error('Choose a device.');
+        await account.updateDevice(params.id, { grants: grantsFrom(params.grants), ...(text(params.name, 60)?.trim() ? { name: params.name.trim() } : {}) });
+        syncAccount();
+        return account.listDevices();
+      }
+      case 'accountRemoveDevice':
+        if (!text(params?.id, 64)) throw new Error('Choose a device.');
+        await account.removeDevice(params.id);
+        return account.listDevices();
+      case 'accountChangePassphrase': {
+        const passphrase = text(params?.passphrase);
+        if (!passphrase) throw new Error('Enter a new passphrase.');
+        try { await account.changePassphrase(passphrase); } finally { params.passphrase = ''; }
+        return accountStatus();
+      }
       case 'refreshCredits': return refreshCredits();
+      case 'refreshGatewayCredits': return refreshGatewayCredits();
       case 'importOpenRouterActivity': {
         if (!params || typeof params.managementKey !== 'string' || !params.managementKey.trim() || params.managementKey.length > 1024)
           throw new Error('Enter a temporary OpenRouter management key.');
@@ -304,7 +398,7 @@ else {
         validateDictionaryTerms(params.dictionaryTerms);
         validateModelDictionary(settings, params.transcriptionModel, params.dictionaryTerms);
         settings = testMode ? { ...settings, hasXaiKey: settings.hasXaiKey || !!params.xaiApiKey, hasGatewayKey: settings.hasGatewayKey || !!params.gatewayApiKey, liveChunks: params.liveChunks, doubleTranscription: params.doubleTranscription, lockMode: params.lockMode, autoLearn: params.autoLearn, transcriptionModel: params.transcriptionModel, cleanupMode: params.cleanupMode, shortcut: params.shortcut ?? settings.shortcut, microphoneDeviceId: params.microphoneDeviceId ?? settings.microphoneDeviceId ?? '', dictionaryTerms: params.dictionaryTerms } : await send('saveSettings', params);
-        broadcast({ type: 'settings', settings }); refreshCredits(); dictionarySync.sync(); return settings;
+        broadcast({ type: 'settings', settings }); refreshCredits(); syncAccount(); return settings;
       }
       case 'importWisprDictionary': {
         validateDictionaryTerms(params.dictionaryTerms);
@@ -413,7 +507,7 @@ else {
     });
   });
   app.whenReady().then(async () => {
-    if (!testMode) await dictionarySync.load();
+    if (!testMode) { await account.load(); await dictionarySync.load(); await itemSync.load(); }
     if (!testMode) {
       try { history = await historyStore.read(); costLedger = await historyStore.readCostLedger(); }
       catch { historyError = true; }
@@ -446,7 +540,7 @@ else {
       updateTrayMenu();
       tray.on('double-click', () => showMain());
       startEngine();
-      setInterval(() => { if (state.mode === 'Idle') dictionarySync.sync(); }, 60000).unref();
+      setInterval(() => { if (state.mode === 'Idle') syncAccount(); }, 60000).unref();
       startAutoUpdates(app, version => {
         if (updateReadyVersion === version) return;
         updateReadyVersion = version;

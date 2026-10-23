@@ -23,14 +23,17 @@ class AudioRecorder(private val context: Context) {
     @Volatile private var captureStartedMs = 0L
     @Volatile private var captureError: String? = null
     private var captureInfo: JSONObject? = null
+    // Receives each block of PCM as it is captured, for live transcription. The buffer is reused afterwards.
+    @Volatile private var pcmListener: ((ByteArray, Int) -> Unit)? = null
     fun captureMetadata(): JSONObject? = captureInfo?.let { JSONObject(it.toString()) }
     val isActive: Boolean get() = recorder != null
 
     @SuppressLint("MissingPermission")
     @Synchronized
-    fun start(): Boolean {
+    fun start(onPcm: ((ByteArray, Int) -> Unit)? = null): Boolean {
         if (isActive) return true
         cancel()
+        pcmListener = onPcm
         val minimumBuffer = AudioRecord.getMinBufferSize(
             AudioRecordingSpec.SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
@@ -129,6 +132,7 @@ class AudioRecorder(private val context: Context) {
         val writer = writerThread
         writerThread = null
         if (writer != null && writer !== Thread.currentThread()) runCatching { writer.join(2_000) }
+        pcmListener = null
         captureInfo?.put("captureElapsedMs", SystemClock.elapsedRealtime() - captureStartedMs)
             ?.put("writerFinished", writer?.isAlive != true)
         captureError?.let { captureInfo?.put("readErrorType", it) }
@@ -156,6 +160,7 @@ class AudioRecorder(private val context: Context) {
                     if (pcmBytes == 0) updateInputDevice(audioRecord)
                     output.write(buffer, 0, read)
                     pcmBytes += read
+                    pcmListener?.let { listener -> runCatching { listener(buffer, read) } }
                 } else if (read != 0 && writerRunning) {
                     throw IllegalStateException("AudioRecord read failed: $read")
                 }

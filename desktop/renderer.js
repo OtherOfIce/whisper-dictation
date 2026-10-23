@@ -1,3 +1,5 @@
+// This project's own Convex deployment, so signing in only needs an email address.
+const DEFAULT_SYNC_URL = 'https://rare-canary-989.convex.site';
 const icons = {
   wave: '<path d="M3 10v4m4-8v12m5-15v18m5-13v8m4-11v14"/>',
   history: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 2h6v4H9zM8 11h8m-8 4h5"/>',
@@ -20,7 +22,7 @@ function icon(name) { const span = document.createElement('span'); span.innerHTM
 document.querySelectorAll('[data-icon]').forEach(node => node.replaceWith(icon(node.dataset.icon)));
 const $ = id => document.getElementById(id);
 const call = (method, params) => window.whisper.call(method, params);
-let history = [], selectedId = null, comparisonId = null, currentSettings = {}, pageSize = 100, toastTimer, latestBalance;
+let history = [], selectedId = null, comparisonId = null, currentSettings = {}, pageSize = 100, toastTimer, latestBalance, latestGatewayBalance;
 let activeAudio = null, activeAudioId = null, activeAudioButton = null, activeAudioUrl = null;
 function renderWordStats(stats) {
   if (!stats) return;
@@ -180,6 +182,11 @@ function transcriptMetaFacts(metrics) {
   return facts;
 }
 function renderCosts(costs) {
+  // Gateway spend has its own card and must not appear under OpenRouter.
+  if (costs?.models) {
+    const models = costs.models.filter(row => !['microsoft/mai-transcribe-2-streaming', 'mai-transcribe-2-streaming'].includes(row.model));
+    costs = { ...costs, models, voice: models.filter(row => row.category === 'voice').reduce((total, row) => total + row.amount, 0) };
+  }
   const activity = costs?.source === 'activity';
   const locallyRecorded = (costs?.voiceCount || 0) + (costs?.cleanupCount || 0) > 0;
   $('cost-voice').textContent = activity ? money(costs.voice, 4) : '—';
@@ -210,6 +217,22 @@ function renderCosts(costs) {
   fragment.append(note);
   popover.replaceChildren(fragment);
 }
+function renderGatewayBalance(balance) {
+  latestGatewayBalance = balance;
+  $('gateway-balance-amount').textContent = money(balance?.remaining);
+  $('gateway-usage-total').textContent = money(balance?.usage, 4);
+  $('gateway-balance-detail').textContent = balance?.message || 'Connecting to your account�';
+  $('gateway-balance-updated').textContent = balance ? `Updated ${new Date(balance.updated).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}` : '';
+}
+$('refresh-gateway-balance').onclick = async () => {
+  $('refresh-gateway-balance').disabled = true;
+  try {
+    const value = await call('refreshGatewayCredits');
+    if (value?.error) toast(value.error);
+    else renderGatewayBalance(value);
+  } catch (error) { toast(error.message); }
+  finally { $('refresh-gateway-balance').disabled = false; }
+};
 function renderBalance(balance) {
   latestBalance = balance;
   if (!balance) return;
@@ -307,6 +330,8 @@ function renderSettings(settings) {
   }
   $('key-status').textContent = settings.hasKey ? 'Saved securely' : 'Not connected';
   $('xai-key-status').textContent = settings.hasXaiKey ? 'Saved securely' : 'Not connected';
+  $('gateway-cost-card').hidden = !(settings.hasGatewayKey && settings.transcriptionModel === 'mai-transcribe-2-streaming');
+  if ($('gateway-cost-card').hidden) renderGatewayBalance(null);
   $('gateway-key-status').textContent = settings.hasGatewayKey ? 'Saved securely' : 'Not connected';
   $('live-chunks').checked = !!settings.liveChunks;
   $('double-transcription').checked = !!settings.doubleTranscription;
@@ -335,13 +360,159 @@ function updateModelSettings() {
 }
 $('transcription-model').onchange = updateModelSettings;
 let currentSync;
+let accountMode = 'sign-in';
+const ACCOUNT_MODES = {
+  'sign-in': ['Sign in', 'Use the username and passphrase you chose when you created the account. This desktop can then add and manage devices.'],
+  create: ['Create account', 'Set up sync on your main Windows desktop. Choose a passphrase of at least 12 characters: it protects your API keys and cannot be recovered. Other devices are added from here with a pairing code.'],
+  pair: ['Pair', 'On a desktop that is already signed in, open Account and sync, choose Add device, and enter the code it shows here.']
+};
+function setAccountMode(mode) {
+  accountMode = mode;
+  for (const button of document.querySelectorAll('[data-account-mode]')) button.classList.toggle('selected', button.dataset.accountMode === mode);
+  const [action, help] = ACCOUNT_MODES[mode];
+  $('account-submit').textContent = action; $('account-mode-help').textContent = help;
+  $('credentials-fields').hidden = mode === 'pair'; $('pair-fields').hidden = mode !== 'pair'; $('confirm-row').hidden = mode !== 'create';
+  $('account-passphrase').autocomplete = mode === 'create' ? 'new-password' : 'current-password';
+}
+// Show/Hide reveals a passphrase and its confirmation together; a warning shows while Caps Lock is on.
+function concealPassphrases() {
+  for (const button of document.querySelectorAll('[data-reveal]')) {
+    for (const id of button.dataset.reveal.split(' ')) $(id).type = 'password';
+    button.textContent = 'Show'; button.setAttribute('aria-pressed', 'false');
+  }
+}
+for (const button of document.querySelectorAll('[data-reveal]')) button.onclick = () => {
+  const show = button.getAttribute('aria-pressed') !== 'true';
+  for (const id of button.dataset.reveal.split(' ')) $(id).type = show ? 'text' : 'password';
+  button.textContent = show ? 'Hide' : 'Show'; button.setAttribute('aria-pressed', String(show));
+};
+for (const input of document.querySelectorAll('[data-passphrase]')) {
+  const warning = input.closest('[data-passphrase-group]').querySelector('.caps-warning');
+  const check = event => { warning.hidden = !event.getModifierState?.('CapsLock'); };
+  for (const type of ['keydown', 'keyup', 'mousedown']) input.addEventListener(type, check);
+  input.addEventListener('blur', () => { warning.hidden = true; });
+}
+for (const button of document.querySelectorAll('[data-account-mode]')) button.onclick = () => setAccountMode(button.dataset.accountMode);
+setAccountMode('sign-in');
+
+function grantsText(grants) {
+  if (!grants) return '';
+  const parts = [grants.secrets && 'API keys', grants.settings && 'voice settings', grants.dictionary && `the ${grants.dictionary} dictionary`].filter(Boolean);
+  return parts.length ? parts.join(', ').replace(/, ([^,]*)$/, ' and $1') : 'nothing yet';
+}
+function syncMessage(sync) {
+  const items = sync.items?.message, dictionary = sync.dictionary?.message;
+  return sync.account?.message || (items && items !== 'Synced' ? items : '') || dictionary || items || '';
+}
 function renderSync(sync, updateConnection = false) {
   currentSync = sync;
-  if (updateConnection) $('sync-url').value = sync.url || '';
-  $('sync-status').textContent = sync.message;
-  $('sync-now').disabled = !sync.connected;
-  $('disconnect-sync').disabled = !sync.connected;
+  const account = sync.account || {}, dictionary = sync.dictionary || {};
+  if (updateConnection || !$('sync-url').value) $('sync-url').value = account.url || dictionary.url || DEFAULT_SYNC_URL;
+  $('sync-status').textContent = syncMessage(sync);
+  const signedIn = Boolean(account.signedIn);
+  $('signed-in-panel').hidden = !signedIn; $('signed-out-panel').hidden = signedIn;
+  $('sync-url').disabled = signedIn; $('sign-out').hidden = !signedIn;
+  $('account-username-label').textContent = account.username || '';
+  $('account-device-label').textContent = account.name || 'this device';
+  $('account-grants').textContent = signedIn ? `This device syncs ${grantsText(account.grants)}.${account.admin ? '' : ' Change this from your desktop.'}` : '';
+  const wasAdmin = !$('devices-panel').hidden;
+  $('devices-panel').hidden = !(signedIn && account.admin);
+  if (signedIn && account.admin && !wasAdmin) loadDevices();
+  if (dictionary.sharedKey) $('shared-key-details').open = true;
+  $('sync-now').disabled = !(signedIn || dictionary.sharedKey);
+  $('disconnect-sync').disabled = !dictionary.sharedKey;
 }
+
+// --- devices (admin desktops) ---
+let deviceLists = ['Personal'], editingDevice = null, removeArmed = null;
+function timeAgo(time) {
+  const minutes = Math.round((Date.now() - time) / 60000);
+  if (minutes < 15) return 'active now';
+  if (minutes < 120) return `seen ${minutes} minutes ago`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `seen ${hours} hours ago` : `seen ${Math.round(hours / 24)} days ago`;
+}
+function renderDevices({ devices, lists }) {
+  deviceLists = lists?.length ? lists : ['Personal'];
+  $('device-list').replaceChildren(...devices.map(device => {
+    const row = document.createElement('li');
+    const text = document.createElement('div');
+    const name = document.createElement('strong'); name.textContent = device.name;
+    const detail = document.createElement('span'); detail.className = 'small muted';
+    detail.textContent = [device.current ? 'this device' : timeAgo(device.lastSeen), device.admin ? 'manages devices' : '', `syncs ${grantsText(device.grants)}`].filter(Boolean).join(' · ');
+    text.append(name, detail);
+    const actions = document.createElement('div'); actions.className = 'device-actions';
+    const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'text-button'; edit.textContent = 'Change';
+    edit.onclick = () => openDeviceForm(device);
+    actions.append(edit);
+    if (!device.current) {
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'text-button';
+      remove.textContent = removeArmed === device.id ? 'Click again to remove' : 'Remove';
+      remove.onclick = () => removeDevice(device, remove);
+      actions.append(remove);
+    }
+    row.append(text, actions);
+    return row;
+  }));
+}
+async function loadDevices() {
+  try { renderDevices(await call('accountDevices')); } catch (error) { toast(error.message); }
+}
+async function removeDevice(device, button) {
+  if (removeArmed !== device.id) {
+    removeArmed = device.id; button.textContent = 'Click again to remove';
+    setTimeout(() => { if (removeArmed === device.id) { removeArmed = null; button.textContent = 'Remove'; } }, 8000); return;
+  }
+  removeArmed = null; button.disabled = true;
+  try { renderDevices(await call('accountRemoveDevice', { id: device.id })); } catch (error) { toast(error.message); button.disabled = false; }
+}
+function openDeviceForm(device = null) {
+  editingDevice = device;
+  $('pair-code-panel').hidden = true; $('device-form').hidden = false; $('add-device').hidden = true;
+  $('device-form-title').textContent = device ? `Change ${device.name}` : 'Add device';
+  $('device-save').textContent = device ? 'Save' : 'Create pairing code';
+  $('device-name').value = device?.name || '';
+  const grants = device?.grants || { secrets: true, settings: true, dictionary: deviceLists[0] };
+  $('grant-secrets').checked = grants.secrets; $('grant-settings').checked = grants.settings;
+  const keysLocked = Boolean(device && !device.hasKeys);
+  $('grant-secrets').disabled = keysLocked;
+  $('grant-secrets-note').textContent = keysLocked ? 'paired without them; remove and pair again to add' : '';
+  const options = [...deviceLists.map(list => new Option(list, list)), new Option('New list…', '__new'), new Option('No dictionary', '')];
+  $('device-dictionary').replaceChildren(...options);
+  $('device-dictionary').value = grants.dictionary ?? '';
+  $('device-dictionary-new').hidden = true; $('device-dictionary-new').value = '';
+  $('device-name').focus();
+}
+function closeDeviceForm() { editingDevice = null; $('device-form').hidden = true; $('add-device').hidden = false; }
+$('device-dictionary').onchange = () => { $('device-dictionary-new').hidden = $('device-dictionary').value !== '__new'; if ($('device-dictionary').value === '__new') $('device-dictionary-new').focus(); };
+$('add-device').onclick = () => openDeviceForm();
+$('device-cancel').onclick = closeDeviceForm;
+$('device-save').onclick = async () => {
+  const button = $('device-save'); button.disabled = true;
+  const choice = $('device-dictionary').value;
+  const grants = { secrets: $('grant-secrets').checked, settings: $('grant-settings').checked, history: false, dictionary: choice === '__new' ? $('device-dictionary-new').value.trim() : choice || null };
+  try {
+    if (editingDevice) {
+      renderDevices(await call('accountUpdateDevice', { id: editingDevice.id, name: $('device-name').value, grants }));
+      closeDeviceForm();
+    } else {
+      const { code, expiresAt } = await call('accountAddDevice', { name: $('device-name').value, grants });
+      closeDeviceForm(); $('add-device').hidden = true;
+      $('pair-code').textContent = code;
+      $('pair-code-expiry').textContent = `Works once, until ${new Date(expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`;
+      $('pair-code-panel').hidden = false;
+    }
+  } catch (error) { toast(error.message); } finally { button.disabled = false; }
+};
+$('pair-code-done').onclick = () => { $('pair-code-panel').hidden = true; $('pair-code').textContent = ''; $('add-device').hidden = false; loadDevices(); };
+$('change-passphrase').onclick = () => {
+  if ($('new-passphrase').value !== $('new-passphrase-confirm').value) { toast('The two passphrases do not match.'); return; }
+  accountAction($('change-passphrase'), async () => {
+    const sync = await call('accountChangePassphrase', { passphrase: $('new-passphrase').value });
+    $('new-passphrase').value = ''; $('new-passphrase-confirm').value = ''; concealPassphrases(); return sync;
+  });
+};
+
 function renderMicrophones(devices, selected) {
   const options = [new Option('System default', '')];
   for (const device of devices) options.push(new Option(device.name, device.id));
@@ -357,6 +528,23 @@ $('refresh-microphones').onclick = async () => {
     renderMicrophones(devices, $('microphone-device').value);
   } catch (error) { toast(error.message); } finally { button.disabled = false; }
 };
+async function accountAction(button, work) {
+  button.disabled = true;
+  try { renderSync(await work(), true); } catch (error) { toast(error.message); } finally { button.disabled = false; if (currentSync) renderSync(currentSync); }
+}
+$('account-submit').onclick = () => {
+  if (accountMode === 'create' && $('account-passphrase').value !== $('account-passphrase-confirm').value) { toast('The two passphrases do not match.'); return; }
+  accountAction($('account-submit'), async () => {
+    const url = $('sync-url').value;
+    $('sync-status').textContent = accountMode === 'pair' ? 'Pairing…' : 'Checking the passphrase…';
+    const sync = accountMode === 'pair'
+      ? await call('accountPair', { url, code: $('account-pair-code').value })
+      : await call(accountMode === 'create' ? 'accountCreate' : 'accountSignIn', { url, username: $('account-username').value, passphrase: $('account-passphrase').value });
+    for (const id of ['account-passphrase', 'account-passphrase-confirm', 'account-pair-code']) $(id).value = '';
+    return sync;
+  });
+};
+$('sign-out').onclick = () => accountAction($('sign-out'), () => call('accountSignOut'));
 for (const id of ['connect-sync', 'sync-now', 'disconnect-sync']) $(id).onclick = async () => {
   const button = $(id); button.disabled = true;
   try {
@@ -547,6 +735,8 @@ window.whisper.onEvent(event => {
   if (event.type === 'history') { history = event.history; renderHistory(); if (selectedId && !history.some(entry => entry.id === selectedId)) closePerformance(); if (comparisonId) renderComparison(); }
   if (event.type === 'metricsUpdated') { const entry = history.find(x => x.id === event.id); if (entry) entry.metrics = event.metrics; if (event.id === selectedId) renderPerformance(); }
   if (event.type === 'stats') { renderWordStats(event.stats); renderCosts(event.costs); }
+  if (event.type === 'gatewayBalance') renderGatewayBalance(event.balance);
+  if (event.type === 'gatewayBalanceError') $('gateway-balance-detail').textContent = latestGatewayBalance ? 'Refresh failed. Showing the last known balance.' : 'Balance unavailable. Try refreshing.';
   if (event.type === 'balance') renderBalance(event.balance);
   if (event.type === 'balanceError') { $('balance-detail').textContent = latestBalance ? 'Refresh failed. Showing the last known balance.' : 'Balance unavailable. Try refreshing.'; }
   if (event.type === 'settings' || event.type === 'ready') renderSettings(event.settings);
@@ -584,6 +774,6 @@ window.whisper.onEvent(event => {
 });
 call('initial').then(initial => {
   renderSync(initial.dictionarySync, true);
-  history = initial.history; renderHistory(); renderWordStats(initial.stats); renderCosts(initial.costs); renderSettings(initial.settings); renderBalance(initial.balance);
+  history = initial.history; renderHistory(); renderWordStats(initial.stats); renderCosts(initial.costs); renderSettings(initial.settings); renderBalance(initial.balance); renderGatewayBalance(initial.gatewayBalance);
   if (initial.historyError) toast('Saved history could not be read. The existing file has been left untouched.');
 }).catch(error => toast(error.message));

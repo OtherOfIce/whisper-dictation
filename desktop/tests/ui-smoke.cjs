@@ -58,6 +58,34 @@ exports.run = async ({ main, overlay, learning, app, engineEvent, testOverlayAct
   await evaluate('document.getElementById("close-comparison").click()');
   assert.equal(await evaluate('getComputedStyle(document.querySelector(\'[aria-label="No saved audio"]\')).cursor'), 'default');
   assert.equal(await evaluate('document.getElementById("balance-amount").textContent'), '$18.42');
+  assert.equal(await evaluate('document.getElementById("gateway-cost-card").hidden'), true);
+  const savedCostSettings = await evaluate('currentSettings');
+  for (const [hasGatewayKey, transcriptionModel, visible] of [
+    [false, 'mai-transcribe-2-streaming', false],
+    [true, 'mai-transcribe-2-clean', false],
+    [true, 'mai-transcribe-2-streaming', true]
+  ]) {
+    engineEvent({ type: 'settings', settings: { ...savedCostSettings, hasGatewayKey, transcriptionModel } });
+    await wait(50);
+    assert.equal(await evaluate('document.getElementById("gateway-cost-card").hidden'), !visible);
+  }
+  engineEvent({ type: 'gatewayBalance', balance: { remaining: 12.34, usage: .5678, message: 'Vercel team balance and usage', updated: new Date().toISOString() } });
+  await wait(50);
+  assert.equal(await evaluate('document.getElementById("gateway-balance-amount").textContent'), '$12.34');
+  assert.equal(await evaluate('document.getElementById("gateway-usage-total").textContent'), '$0.5678');
+  await evaluate(`renderCosts({ source: 'activity', voice: 1.25, cleanup: .1, models: [
+    { category: 'voice', model: 'microsoft/mai-transcribe-2-streaming', amount: 1 },
+    { category: 'voice', model: 'openai/gpt-transcribe', amount: .25 },
+    { category: 'cleanup', model: 'openai/gpt-6-luna', amount: .1 }
+  ] })`);
+  assert.equal(await evaluate('document.getElementById("cost-voice").textContent'), '$0.2500');
+  assert(!(await evaluate('document.getElementById("cost-model-breakdown").textContent')).includes('Streaming'));
+  await fs.writeFile(path.join(directory, 'gateway-costs.png'), (await main.webContents.capturePage()).toPNG());
+  await evaluate("window.whisper.call('initial').then(value => renderCosts(value.costs))");
+  engineEvent({ type: 'gatewayBalanceError' }); await wait(50);
+  assert((await evaluate('document.getElementById("gateway-balance-detail").textContent')).includes('last known balance'));
+  engineEvent({ type: 'settings', settings: savedCostSettings }); await wait(50);
+
   assert.equal(await evaluate('document.getElementById("cost-voice").textContent'), '$0.0212');
   assert.equal(await evaluate('document.getElementById("cost-cleanup").textContent'), '$0.0038');
   await evaluate('document.querySelector(".cost-info").focus()');
@@ -164,6 +192,55 @@ exports.run = async ({ main, overlay, learning, app, engineEvent, testOverlayAct
   assert.equal(await evaluate('document.getElementById("dictionary-terms").value'), '');
   assert.equal(await evaluate('document.getElementById("sync-status").textContent'), 'Sync is off');
   assert.equal(await evaluate('document.getElementById("sync-now").disabled'), true);
+  const visible = id => evaluate(`!document.getElementById('${id}').hidden`);
+  assert.deepEqual([await visible('signed-out-panel'), await visible('signed-in-panel'), await visible('sign-out')], [true, false, false]);
+  // Signed out: three ways in, each showing only its own fields.
+  await evaluate("document.querySelector('[data-account-mode=pair]').click()");
+  assert.deepEqual([await visible('pair-fields'), await visible('credentials-fields'), await evaluate('document.getElementById("account-submit").textContent')], [true, false, 'Pair']);
+  await evaluate("document.querySelector('[data-account-mode=create]').click()");
+  assert.deepEqual([await visible('pair-fields'), await visible('confirm-row'), await evaluate('document.getElementById("account-submit").textContent')], [false, true, 'Create account']);
+  // Show reveals the passphrase and its confirmation together; Caps Lock shows a warning until the field loses focus.
+  const types = () => evaluate('["account-passphrase","account-passphrase-confirm"].map(id => document.getElementById(id).type)');
+  await evaluate("document.querySelector('[data-reveal^=account-passphrase]').click()");
+  assert.deepEqual(await types(), ['text', 'text']);
+  await evaluate("document.querySelector('[data-reveal^=account-passphrase]').click()");
+  assert.deepEqual(await types(), ['password', 'password']);
+  const capsWarning = "!document.querySelector('#credentials-fields .caps-warning').hidden";
+  await evaluate("{ const field = document.getElementById('account-passphrase'); field.focus(); field.dispatchEvent(new KeyboardEvent('keyup', { key: 'A', modifierCapsLock: true })) }");
+  assert.equal(await evaluate(capsWarning), true);
+  await evaluate("document.getElementById('account-passphrase').dispatchEvent(new KeyboardEvent('keyup', { key: 'a' }))");
+  assert.equal(await evaluate(capsWarning), false);
+  await evaluate("{ const field = document.getElementById('account-passphrase'); field.dispatchEvent(new KeyboardEvent('keyup', { key: 'A', modifierCapsLock: true })); field.blur() }");
+  assert.equal(await evaluate(capsWarning), false);
+  const grants = { secrets: true, settings: true, history: false, dictionary: 'Personal' };
+  const status = account => ({ account: { signedIn: true, url: 'https://test.convex.site', username: 'me@example.com', name: 'Desk', grants, hasKeys: true, message: '', ...account }, dictionary: { url: '', sharedKey: false, list: 'Personal', message: 'Synced' }, items: { message: 'Synced' } });
+  engineEvent({ type: 'dictionarySyncStatus', sync: status({ admin: true }) });
+  await wait(150);
+  assert.deepEqual([await visible('signed-out-panel'), await visible('signed-in-panel'), await visible('sign-out'), await visible('devices-panel')], [false, true, true, true]);
+  assert.equal(await evaluate('document.getElementById("account-username-label").textContent'), 'me@example.com');
+  assert.equal(await evaluate('document.getElementById("account-grants").textContent'), 'This device syncs API keys, voice settings and the Personal dictionary.');
+  assert.equal(await evaluate('document.getElementById("sync-url").disabled'), true);
+  assert.equal(await evaluate('document.querySelectorAll("#device-list li").length'), 2);
+  assert.match(await evaluate('document.querySelector("#device-list li:last-child").textContent'), /Work laptop.*seen 3 hours ago.*syncs voice settings and the Work dictionary/);
+  // Changing a device paired without keys cannot add them; adding a device offers the existing lists.
+  await evaluate('document.querySelector("#device-list li:last-child button").click()');
+  assert.deepEqual([await visible('device-form'), await evaluate('document.getElementById("grant-secrets").disabled'), await evaluate('document.getElementById("device-dictionary").value')], [true, true, 'Work']);
+  assert.equal(await evaluate('document.getElementById("grant-history").disabled'), true);
+  await evaluate('document.getElementById("device-cancel").click(); document.getElementById("add-device").click()');
+  assert.deepEqual(await evaluate('[...document.getElementById("device-dictionary").options].map(option => option.text)'), ['Personal', 'Work', 'New list…', 'No dictionary']);
+  await evaluate('document.getElementById("device-dictionary").value="__new"; document.getElementById("device-dictionary").dispatchEvent(new Event("change"))');
+  assert.equal(await visible('device-dictionary-new'), true);
+  await evaluate('document.getElementById("device-cancel").click()');
+  // A paired device sees what it gets, and cannot manage devices.
+  engineEvent({ type: 'dictionarySyncStatus', sync: status({ admin: false, name: 'Phone', grants: { ...grants, settings: false, dictionary: null } }) });
+  await wait(50);
+  assert.equal(await visible('devices-panel'), false);
+  assert.equal(await evaluate('document.getElementById("account-grants").textContent'), 'This device syncs API keys. Change this from your desktop.');
+  engineEvent({ type: 'dictionarySyncStatus', sync: { account: { signedIn: false, url: '', username: '', name: '', admin: false, grants: null, hasKeys: false, message: 'This device was signed out. Sign in again to keep syncing.' }, dictionary: { url: '', sharedKey: false, list: null, message: 'Sync is off' }, items: { message: '' } } });
+  await wait(50);
+  assert.deepEqual([await visible('signed-out-panel'), await visible('signed-in-panel')], [true, false]);
+  assert.match(await evaluate('document.getElementById("sync-status").textContent'), /signed out/);
+  assert.equal(await evaluate('document.getElementById("sync-url").disabled'), false);
   await evaluate('document.getElementById("dictionary-terms").value="Draft term"');
   engineEvent({ type: 'dictionarySynced', settings: { ...(await evaluate("window.whisper.call('initial').then(x => x.settings)")), dictionaryTerms: ['Phone term'] } });
   await wait(100);

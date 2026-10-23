@@ -117,6 +117,63 @@ internal sealed class EngineApp : ApplicationContext
         });
     }
     private object SettingsState() => new { hasKey = !string.IsNullOrWhiteSpace(apiKey), hasXaiKey = !string.IsNullOrWhiteSpace(xaiApiKey), hasGatewayKey = !string.IsNullOrWhiteSpace(gatewayApiKey), models = TranscriptionModels.All, liveChunks, doubleTranscription, lockMode, autoLearn, pauseMedia, cleanupMode, transcriptionModel, dictionaryTerms, shortcut = shortcutBinding, microphoneDeviceId, microphones = MicrophoneDevices.Available() };
+    // Settings shared between devices, and the saved API keys. Only the main process of the desktop app asks for this;
+    // keys are never sent to the renderer. Keys come from saved files, not environment variables.
+    private object SyncState() => new
+    {
+        settings = new { transcriptionModel, cleanupMode, raceMai = doubleTranscription },
+        secrets = SyncedKeys().ToDictionary(entry => entry.Name, entry => entry.Stored())
+    };
+    // Every API key that syncs between devices: its item name, the saved key, and how to save (or, with null, clear) it.
+    // Adding a provider here is all it takes for its key to sync; other devices keep keys they do not use yet.
+    private (string Name, Func<string?> Stored, Action<string?> Store)[] SyncedKeys() =>
+    [
+        ("openrouter", Settings.StoredKey, key => { if (key is null) Settings.ClearKey(); else Settings.SaveKey(key); apiKey = Settings.LoadKey(); }),
+        ("xai", Settings.StoredXaiKey, key => { if (key is null) Settings.ClearXaiKey(); else Settings.SaveXaiKey(key); xaiApiKey = Settings.LoadXaiKey(); }),
+        ("gateway", Settings.StoredGatewayKey, key => { if (key is null) Settings.ClearGatewayKey(); else Settings.SaveGatewayKey(key); gatewayApiKey = Settings.LoadGatewayKey(); }),
+    ];
+    // Applies what another device changed. A value this device cannot use (an unknown model, or a dictionary the
+    // model cannot accept) is reported back as rejected instead of being half applied.
+    private object ApplySyncState(JsonElement values)
+    {
+        var rejected = new List<string>();
+        if (values.TryGetProperty("settings", out var shared))
+        {
+            foreach (var change in shared.EnumerateObject())
+            {
+                var name = "settings." + change.Name;
+                try
+                {
+                    switch (change.Name)
+                    {
+                        case "transcriptionModel":
+                            var model = change.Value.GetString() ?? "";
+                            if (!TranscriptionModels.IsValid(model)) throw new InvalidOperationException();
+                            TranscriptionModels.ValidateDictionary(model, dictionaryTerms);
+                            Settings.SaveTranscriptionModel(model); transcriptionModel = Settings.TranscriptionModel; break;
+                        case "cleanupMode":
+                            Settings.SaveCleanupMode(change.Value.GetString() ?? ""); cleanupMode = Settings.CleanupMode; break;
+                        case "raceMai":
+                            doubleTranscription = change.Value.GetBoolean(); Settings.SaveDoubleTranscription(doubleTranscription); break;
+                        default: rejected.Add(name); break;
+                    }
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or FormatException) { rejected.Add(name); }
+            }
+        }
+        if (values.TryGetProperty("secrets", out var secrets))
+        {
+            foreach (var change in secrets.EnumerateObject())
+            {
+                var name = "secrets." + change.Name;
+                var key = change.Value.ValueKind == JsonValueKind.String ? change.Value.GetString()!.Trim() : null;
+                if (change.Value.ValueKind is not (JsonValueKind.String or JsonValueKind.Null) || key is { Length: 0 or > 1024 }) { rejected.Add(name); continue; }
+                var entry = SyncedKeys().FirstOrDefault(candidate => candidate.Name == change.Name);
+                if (entry.Store is null) rejected.Add(name); else entry.Store(key);
+            }
+        }
+        return new { rejected, settings = SettingsState() };
+    }
     private void Emit(object value) => output.Writer.TryWrite(value);
     private void Notify(string message) => Emit(new { type = "notice", message });
     private void PublishState() => Emit(new { type = "state", mode = cancelled || metrics?.Snapshot().PasteMs is not null ? "Idle" : gesture.Mode.ToString(), phase = processingPhase, level = recorder?.Level ?? 0, id = entryId, metrics = metrics?.Snapshot() });
@@ -145,6 +202,7 @@ internal sealed class EngineApp : ApplicationContext
                 case "stopMicrophoneTest":
                     await StopMicrophoneTestAsync(command.GetProperty("params").GetProperty("playback").GetBoolean()); break;
                 case "state": PublishState(); break;
+                case "gatewayCredits": result = await new Credits(http).GetGatewayAsync(gatewayApiKey); break;
                 case "credits": result = await new Credits(http).GetAsync(apiKey); break;
                 case "importActivity":
                     var managementKey = command.GetProperty("params").GetProperty("managementKey").GetString() ?? "";
@@ -209,6 +267,11 @@ internal sealed class EngineApp : ApplicationContext
                     Settings.SaveDictionaryTerms(importedDictionary); dictionaryTerms = importedDictionary;
                     if (!dictionaryParams.TryGetProperty("preserveLearning", out var preserveLearning) || !preserveLearning.GetBoolean()) learnedEntries.Clear();
                     result = SettingsState(); break;
+                case "syncState": result = SyncState(); break;
+                case "applySyncState":
+                    if (gesture.Mode != CaptureMode.Idle) throw new InvalidOperationException("Finish recording before changing settings.");
+                    if (microphoneTest is not null) throw new InvalidOperationException("Stop the microphone test before changing settings.");
+                    result = ApplySyncState(command.GetProperty("params")); break;
                 case "undoLearning":
                     var learnedId = command.GetProperty("params").GetProperty("id").GetString() ?? "";
                     result = RemoveLearned(learnedId);
@@ -299,6 +362,8 @@ internal sealed class EngineApp : ApplicationContext
             });
             cancellation.Token.ThrowIfCancellationRequested();
             if (audio is null || audio.Length < 6444) { cancellation.Cancel(); outcome = "Too short"; return; }
+            // One budget covers the live finish and every recovery provider/retry.
+            cancellation.CancelAfter(TimeSpan.FromSeconds(15));
             {
                 active.EnqueuePcm(pcm);
                 Exception? primaryFailure = null;
@@ -312,7 +377,7 @@ internal sealed class EngineApp : ApplicationContext
                     trace.Fallback(transcriptionModel, primaryFailure?.Message ?? active.LastError ?? "Part of the recording could not be transcribed.");
                     try
                     {
-                        var fallback = await CreateModelTranscription(trace, dictionaryTerms).TranscribeWithFallbackAsync(
+                        var fallback = await CreateModelTranscription(trace, dictionaryTerms, doubleTranscription).TranscribeWithFallbackAsync(
                             audio, "wav", transcriptionModel, dictionaryTerms, trace, cancellation.Token,
                             // Keep engine state updates on the UI thread.
                             skipRequested: transcriptionModel != TranscriptionModels.GrokStreaming);
@@ -330,6 +395,7 @@ internal sealed class EngineApp : ApplicationContext
             }
             text = rawText;
             cancellation.Token.ThrowIfCancellationRequested();
+            cancellation.CancelAfter(Timeout.InfiniteTimeSpan);
             if (text.Length == 0) { outcome = "No speech"; return; }
             if (cleanupMode != CleanupService.Off)
             {
@@ -376,7 +442,15 @@ internal sealed class EngineApp : ApplicationContext
                 else { outcome = "Saved to history"; Probe("paste-skipped"); } // Electron copies this transcript to the clipboard and shows the Copy action.
             }
         }
-        catch (OperationCanceledException) { text = ""; outcome = cancellation.IsCancellationRequested ? "Cancelled" : "Timed out"; if (outcome == "Timed out") Notify("Transcription timed out. See the timing details in History."); }
+        catch (OperationCanceledException)
+        {
+            text = ""; outcome = cancelled ? "Cancelled" : "Timed out";
+            if (outcome == "Timed out")
+            {
+                if (audio is not null) KeepFailedAudio(id, audio, transcriptionModel, dictionaryTerms);
+                Notify("Transcription timed out. Your recording was kept in History so you can play it back or retry.");
+            }
+        }
         catch (Exception ex)
         {
             if (audio is not null) KeepFailedAudio(id, audio, transcriptionModel, dictionaryTerms);
@@ -428,7 +502,7 @@ internal sealed class EngineApp : ApplicationContext
         catch (Exception) { Probe("learn-error"); Notify("Could not save the learned word. Check your dictionary in Settings."); return null; }
     }
     private TranscriptionPipeline Pipeline() => new(http, new(apiKey, xaiApiKey, gatewayApiKey));
-    private ModelTranscription CreateModelTranscription(SessionMetrics trace, IReadOnlyList<string> dictionary) => Pipeline().Recorded(trace, dictionary);
+    private ModelTranscription CreateModelTranscription(SessionMetrics trace, IReadOnlyList<string> dictionary, bool doubleTranscription = false) => Pipeline().Recorded(trace, dictionary, doubleTranscription);
     private static string ModelLabel(string model) => TranscriptionModels.Describe(model).Label;
     private async Task<object> TranscribeFileAsync(string path, string format, string model, bool useFallback)
     {

@@ -118,8 +118,7 @@ internal sealed class StreamingSession : ITranscriptionSession
                 metrics.UpdateStreaming(diagnosticAttempt, attempt => attempt with { EndedMs = metrics.ElapsedMs, Outcome = "Cancelled" });
                 throw new OperationCanceledException(callerToken);
             }
-            var safe = Failure ?? (ex is HttpRequestException or InvalidDataException or TimeoutException
-                ? ex : new HttpRequestException("Streaming transcription failed. Check your key, credit and connection."));
+            var safe = Failure ?? (ex is HttpRequestException or InvalidDataException or TimeoutException ? ex : Describe(ex));
             Interlocked.CompareExchange(ref failure, safe, null);
             metrics.UpdateStreaming(diagnosticAttempt, attempt => attempt with
             { EndedMs = metrics.ElapsedMs, Outcome = "Failed", FailureStage = phase });
@@ -137,6 +136,10 @@ internal sealed class StreamingSession : ITranscriptionSession
             lifetime.Dispose();
         }
     }
+    // Socket errors carry only a status or network reason; anything else is reduced to its type so no URL or credential can surface.
+    private static HttpRequestException Describe(Exception ex) => ex is System.Net.WebSockets.WebSocketException socket
+        ? new("Streaming connection failed: " + string.Join(" ", new[] { socket.Message, socket.InnerException?.Message }.Where(part => !string.IsNullOrWhiteSpace(part))))
+        : new($"Streaming transcription failed ({ex.GetType().Name}). Check your key, credit and connection.");
     private async Task SendAsync(IStreamingTransport transport, CancellationToken token)
     {
         using var stage = metrics.Measure("Stream audio");

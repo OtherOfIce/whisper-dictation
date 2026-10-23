@@ -13,12 +13,38 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-class SecureCredentialStore(private val context: Context, private val name: String = "openrouter") {
+/** Where credentials live. Production uses the Android Keystore; tests swap in memory. */
+interface CredentialStorage {
+    fun load(): String?
+    fun save(value: String): Boolean
+    fun clear()
+    fun peek(): SecureCredentialStore.Peek
+}
+
+class SecureCredentialStore(private val context: Context, private val name: String = "openrouter") : CredentialStorage {
+    companion object {
+        internal var factory: (Context, String) -> CredentialStorage = { context, name -> SecureCredentialStore(context, name) }
+        fun open(context: Context, name: String = "openrouter"): CredentialStorage = factory(context, name)
+    }
     private val alias = "local_whisper_${name}_key"
     fun isAvailable(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && isUserUnlocked()
     fun hasKey(): Boolean = !load().isNullOrBlank()
 
-    fun load(): String? {
+    sealed interface Peek {
+        data object Unavailable : Peek
+        data object Empty : Peek
+        data object Unreadable : Peek
+        data class Value(val key: String) : Peek
+    }
+
+    /** Tells "no key is saved" apart from "a key is saved but cannot be read right now", which load() reports alike. */
+    override fun peek(): Peek {
+        if (!isAvailable()) return Peek.Unavailable
+        if (!credentialFile().isFile) return Peek.Empty
+        return load()?.takeIf { it.isNotBlank() }?.let { Peek.Value(it) } ?: Peek.Unreadable
+    }
+
+    override fun load(): String? {
         if (!isAvailable()) return null
         return runCatching {
             val parts = credentialFile().takeIf(File::isFile)?.readText()?.split(':') ?: return null
@@ -29,7 +55,7 @@ class SecureCredentialStore(private val context: Context, private val name: Stri
         }.getOrNull()
     }
 
-    fun save(value: String): Boolean {
+    override fun save(value: String): Boolean {
         if (!isAvailable() || value.isBlank()) return false
         return runCatching {
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -45,7 +71,7 @@ class SecureCredentialStore(private val context: Context, private val name: Stri
         }.getOrDefault(false)
     }
 
-    fun clear() {
+    override fun clear() {
         if (isUserUnlocked()) credentialFile().delete()
         runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(alias) }
     }

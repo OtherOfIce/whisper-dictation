@@ -36,7 +36,7 @@ class RecordingLogStore(private val directory: File) {
             throw error
         }
     }
-    fun finish(id: String, outcome: String, rawText: String?, finalText: String?, elapsedMs: Long, errorType: String?) = synchronized(lock) {
+    fun finish(id: String, outcome: String, rawText: String?, finalText: String?, elapsedMs: Long, errorType: String?, extra: JSONObject? = null) = synchronized(lock) {
         val file = File(directory, "$id.json")
         if (!file.isFile || !audioFile(id).isFile) return@synchronized
         val metadata = JSONObject(file.readText())
@@ -44,6 +44,7 @@ class RecordingLogStore(private val directory: File) {
         if (rawText != null) metadata.put("rawTranscript", rawText)
         if (finalText != null) metadata.put("finalTranscript", finalText)
         if (errorType != null) metadata.put("errorType", errorType)
+        extra?.keys()?.forEach { metadata.put(it, extra.get(it)) }
         write(id, metadata)
     }
     fun list(): List<JSONObject> = synchronized(lock) {

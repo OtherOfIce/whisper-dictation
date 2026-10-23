@@ -41,6 +41,33 @@ public sealed class Credits(HttpClient http)
         return new(null, "unavailable", usage.HasValue ? "Usage is available from your existing key." : "Check your OpenRouter API key in Settings.", DateTime.Now, usage, daily, monthly, allowance);
     }
 
+    // Gateway credits are team-wide, rather than usage attributed to this API key.
+    public async Task<CreditBalance> GetGatewayAsync(string gatewayKey)
+    {
+        if (string.IsNullOrWhiteSpace(gatewayKey))
+            return new(null, "unavailable", "Add a Vercel AI Gateway key in Settings.", DateTime.Now);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+        using var request = Request("https://ai-gateway.vercel.sh/v1/credits", gatewayKey);
+        using var response = await http.SendAsync(request, timeout.Token).ConfigureAwait(false);
+        if (response.StatusCode is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized)
+            throw new InvalidOperationException("Check your Vercel AI Gateway key in Settings.");
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException("Vercel balance unavailable. Try refreshing shortly.");
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false));
+        var data = doc.RootElement;
+        return new(GatewayNumber(data, "balance"), "account", "Vercel team balance and usage", DateTime.Now,
+            GatewayNumber(data, "total_used"));
+    }
+
+    private static decimal GatewayNumber(JsonElement data, string name)
+    {
+        var value = data.GetProperty(name);
+        if (value.ValueKind == JsonValueKind.Number) return value.GetDecimal();
+        if (value.ValueKind == JsonValueKind.String && decimal.TryParse(value.GetString(),
+            System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var amount)) return amount;
+        throw new InvalidOperationException("Vercel returned an invalid credit balance.");
+    }
+
     public async Task<ActivityImport> ImportActivityAsync(string transcriptionKey, string managementKey, CancellationToken cancellation = default)
     {
         if (string.IsNullOrWhiteSpace(transcriptionKey)) throw new InvalidOperationException("Add your OpenRouter API key before importing costs.");

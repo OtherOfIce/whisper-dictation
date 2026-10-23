@@ -25,7 +25,7 @@ internal sealed class GrokStreamingProtocol(string key, IReadOnlyList<string> di
         await transport.ConnectAsync(XaiTranscription.StreamingUri(dictionary),
             new Dictionary<string, string> { ["Authorization"] = "Bearer " + key }, [], token).ConfigureAwait(false);
         using var created = await transport.ReceiveAsync(token).ConfigureAwait(false);
-        if (StreamingJson.Type(created) == "error") throw new HttpRequestException("Grok rejected the streaming session. Check your key, credit and connection.");
+        if (StreamingJson.Type(created) == "error") throw new HttpRequestException("Grok rejected the streaming session: " + StreamingJson.ErrorDetail(created, key));
         if (StreamingJson.Type(created) != "transcript.created") throw new InvalidDataException("Grok did not start the streaming transcription session.");
     }
     public Task CompleteInputAsync(IStreamingTransport transport, CancellationToken token) =>
@@ -33,7 +33,7 @@ internal sealed class GrokStreamingProtocol(string key, IReadOnlyList<string> di
     public StreamingEvent Read(JsonDocument message)
     {
         var type = StreamingJson.Type(message);
-        if (type == "error") throw new HttpRequestException("Grok streaming transcription failed. Check your key, credit and connection.");
+        if (type == "error") throw new HttpRequestException("Grok streaming transcription failed: " + StreamingJson.ErrorDetail(message, key));
         var text = StreamingJson.Text(message, "text");
         if (type == "transcript.partial" && message.RootElement.TryGetProperty("is_final", out var final) && final.ValueKind == JsonValueKind.True)
         {
@@ -66,7 +66,7 @@ internal sealed class GatewayStreamingProtocol(string key) : IStreamingProtocol
     public StreamingEvent Read(JsonDocument message)
     {
         var type = StreamingJson.Type(message);
-        if (type == "error") throw new HttpRequestException("Vercel AI Gateway streaming failed. Check your key, credit and model access.");
+        if (type == "error") throw new HttpRequestException("Vercel AI Gateway streaming failed: " + StreamingJson.ErrorDetail(message, key));
         if (type == "finish")
         {
             var text = StreamingJson.Text(message, "text") ?? throw new InvalidDataException("Vercel AI Gateway returned no completed transcript.");
@@ -82,4 +82,14 @@ internal static class StreamingJson
     internal static string? Type(JsonDocument message) => Text(message, "type");
     internal static string? Text(JsonDocument message, string name) =>
         message.RootElement.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+    // Provider error payload for the History fallback reason: credential redacted, one line, bounded.
+    internal static string ErrorDetail(JsonDocument message, string secret)
+    {
+        var root = message.RootElement;
+        var raw = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("error", out var error) ? error : root;
+        var text = raw.ValueKind == JsonValueKind.String ? raw.GetString() ?? "" : raw.GetRawText();
+        text = string.Join(" ", text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        if (!string.IsNullOrEmpty(secret)) text = text.Replace(secret, "[redacted]").Replace(Uri.EscapeDataString(secret), "[redacted]");
+        return text.Length == 0 ? "no error detail" : text.Length > 300 ? text[..300] + "…" : text;
+    }
 }

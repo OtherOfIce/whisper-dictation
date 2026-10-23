@@ -13,6 +13,7 @@ internal static class Program
     {
         try
         {
+            if (args.Contains("--recovery-latency")) { RecoveryLatencyChecks.RunAsync(Check).GetAwaiter().GetResult(); Console.WriteLine($"PASS: {count} recovery checks"); return; }
             if (args.Contains("--paste-only")) { PasteChecks.Run(Check); return; }
             if (args.Contains("--benchmark")) { Benchmark().GetAwaiter().GetResult(); return; }
             if (args.Contains("--mai-pause-benchmark")) { MaiPauseBenchmark.RunAsync().GetAwaiter().GetResult(); return; }
@@ -30,6 +31,7 @@ internal static class Program
             MicrophoneSelection();
             Api().GetAwaiter().GetResult();
             ParallelChecks().GetAwaiter().GetResult();
+            RecoveryLatencyChecks.RunAsync(Check).GetAwaiter().GetResult();
             Fallback().GetAwaiter().GetResult();
             XaiContract().GetAwaiter().GetResult();
             StreamingChecks.RunAsync(Check).GetAwaiter().GetResult();
@@ -69,6 +71,24 @@ internal static class Program
             Check(result.Kind == kind, "Account balance and key allowance stay distinct");
             Check(result.Usage == 1.5m && result.UsageDaily == .2m, "Existing key usage is retained when balance is forbidden");
             Check(result.Remaining == (kind == "account" ? 75m : kind == "key" ? 8.5m : (decimal?)null), "An unlimited key is not treated as an account balance");
+        }
+        foreach (var status in new[] { HttpStatusCode.OK, HttpStatusCode.Unauthorized, HttpStatusCode.InternalServerError })
+        {
+            using var gatewayHttp = new HttpClient(new Handler((request, _) =>
+            {
+                Check(request.RequestUri!.ToString() == "https://ai-gateway.vercel.sh/v1/credits", "Gateway uses its own credits endpoint");
+                Check(request.Headers.Authorization?.Parameter == "gateway-test-key", "Gateway credits use the saved gateway credential");
+                return Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent("{\"balance\":\"12.34\",\"total_used\":\"0.5678\"}") });
+            }));
+            var credits = new Credits(gatewayHttp);
+            Check((await credits.GetGatewayAsync("")).Kind == "unavailable", "Missing gateway key does not make a request");
+            try
+            {
+                var result = await credits.GetGatewayAsync("gateway-test-key");
+                Check(status == HttpStatusCode.OK && result.Remaining == 12.34m && result.Usage == .5678m && result.UsageDaily is null,
+                    "Gateway parses decimal strings without inventing daily or key usage");
+            }
+            catch (InvalidOperationException) { Check(status != HttpStatusCode.OK, "Gateway failures do not return a misleading balance"); }
         }
         using var activityHttp = new HttpClient(new Handler((request, _) =>
         {

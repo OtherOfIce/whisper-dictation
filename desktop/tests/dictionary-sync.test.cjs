@@ -47,7 +47,7 @@ test('retains offline changes, merges edits during a request, and resumes after 
   terms = terms.filter(term => term !== 'Phone'); await restarted.sync();
   assert.deepEqual(server, ['Desktop', 'New edit']);
   await restarted.configure('', ''); await restarted.sync();
-  assert.equal(restarted.status().connected, false);
+  assert.equal(restarted.status().sharedKey, false);
   assert.deepEqual(terms, ['Desktop', 'New edit']);
   const disconnected = new DictionarySync(options); await disconnected.load();
   assert.equal(disconnected.loadFailed, undefined);

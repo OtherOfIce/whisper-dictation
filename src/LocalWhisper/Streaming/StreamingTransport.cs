@@ -29,12 +29,14 @@ internal sealed class StreamingTransport : IStreamingTransport
         {
             var part = await socket.ReceiveAsync(buffer.AsMemory(), token).ConfigureAwait(false);
             if (part.MessageType == WebSocketMessageType.Close)
-                throw new HttpRequestException("Streaming connection closed before the completed transcript.");
+                throw new HttpRequestException("Streaming connection closed before the completed transcript"
+                    + (socket.CloseStatus is { } code ? $" (code {(int)code}" + (string.IsNullOrWhiteSpace(socket.CloseStatusDescription) ? ")" : $": {Trim(socket.CloseStatusDescription)})") : "") + ".");
             if (part.MessageType != WebSocketMessageType.Text || message.Length + part.Count > 256 * 1024)
                 throw new InvalidDataException("Invalid streaming transcription event.");
             message.Write(buffer, 0, part.Count);
             if (part.EndOfMessage) return JsonDocument.Parse(message.ToArray());
         }
     }
+    private static string Trim(string text) => text.Length > 200 ? text[..200] + "…" : text;
     public void Dispose() { socket.Abort(); socket.Dispose(); }
 }

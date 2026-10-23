@@ -40,10 +40,11 @@ internal sealed class ModelTranscription
             cancellation.ThrowIfCancellationRequested();
             try
             {
+                metrics.TranscriptionModel = model;
                 var text = await transcribe(model, audio, format, dictionary, cancellation).ConfigureAwait(false);
                 if (string.IsNullOrWhiteSpace(text)) throw new InvalidDataException("The provider returned no transcript.");
-                metrics.TranscriptionModel = model;
-                return new(text, requested, model, failures.ToArray());
+                // A provider race can select GPT while executing the MAI fallback step.
+                return new(text, requested, metrics.TranscriptionModel, failures.ToArray());
             }
             catch (Exception ex) when (CanFallback(ex, cancellation))
             {
