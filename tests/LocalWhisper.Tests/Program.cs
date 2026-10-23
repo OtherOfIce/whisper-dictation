@@ -24,6 +24,7 @@ internal static class Program
                 Console.WriteLine($"kind={balance.Kind} usageAvailable={balance.Usage.HasValue} remainingAvailable={balance.Remaining.HasValue}");
                 return;
             }
+            DictationAudioChecks.RunAsync(Check).GetAwaiter().GetResult();
             Gestures();
             ShortcutChecks.Run(Check);
             MicrophoneSelection();

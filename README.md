@@ -91,3 +91,12 @@ Build the installable development APK with:
 ```
 
 The output is `android/app/build/outputs/apk/debugNoMinify/LocalWhisperKeyboard_4.1-debugNoMinify.apk`. Android-specific implementation notes are in `android/ANDROID_NOTES.md`.
+
+### Background media during dictation
+
+**Pause media during dictation** is enabled by default in Windows Settings and Android voice-input settings. It stays active through recording and transcription, then restores audio on completion or cancellation.
+
+- Windows pauses currently playing sessions that support Windows media controls, and temporarily mutes active audio outputs to cover other players. It resumes only sessions it successfully paused that are still paused, and unmutes only outputs it muted. Previously paused players and muted outputs stay that way. Media without pause support continues silently, so its content can still be missed. Windows 10 version 2004 or later is required.
+- Android requests temporary exclusive audio focus using a microphone foreground service, with a voice-input notification. Cooperating players pause and can resume when focus is released. Some players or devices may ignore or deny the request; the keyboard reports a denied request and continues dictation. No global volume setting is changed.
+
+Device checks: play a video or music, dictate, finish, cancel, and dismiss the Android keyboard or quit the Windows app while recording. Confirm playback resumes and audio is restored. Also check initially paused media, initially muted Windows output, rapid cancel/restart, an unsupported player, and the setting disabled. Native playback behavior requires testing on Windows and an Android device.

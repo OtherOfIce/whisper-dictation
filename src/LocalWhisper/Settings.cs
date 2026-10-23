@@ -12,6 +12,9 @@ internal static class Settings
     private static readonly string DictionaryFile = Path.Combine(Folder, "dictionary.bin");
     public static string[] LoadDictionaryTerms() => Vocabulary.Load(DictionaryFile);
     public static void SaveDictionaryTerms(string[] terms) => Vocabulary.Save(DictionaryFile, terms);
+    private static readonly string PauseMediaFile = Path.Combine(Folder, "pause-media.txt");
+    public static bool PauseMedia => !File.Exists(PauseMediaFile) || File.ReadAllText(PauseMediaFile).Trim() == "true";
+    public static void SavePauseMedia(bool enabled) { Directory.CreateDirectory(Folder); File.WriteAllText(PauseMediaFile, enabled ? "true" : "false"); }
     private static readonly string AutoLearnFile = Path.Combine(Folder, "auto-learn.txt");
     public static bool AutoLearn => !File.Exists(AutoLearnFile) || File.ReadAllText(AutoLearnFile).Trim() == "true";
     public static void SaveAutoLearn(bool enabled) { Directory.CreateDirectory(Folder); File.WriteAllText(AutoLearnFile, enabled ? "true" : "false"); }

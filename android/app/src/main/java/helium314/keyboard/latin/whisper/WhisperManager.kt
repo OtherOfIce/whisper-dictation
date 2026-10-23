@@ -83,6 +83,7 @@ class WhisperManager @JvmOverloads constructor(
         if (message != null) { Toast.makeText(context, message, Toast.LENGTH_LONG).show(); return }
         operationId++
         if (!recorder.start()) { Toast.makeText(context, "Microphone unavailable", Toast.LENGTH_SHORT).show(); return }
+        if (context.prefs().getBoolean(DictationAudioService.PREF_PAUSE_MEDIA, true)) DictationAudioService.start(context)
         vibrate(50); onStateChanged?.invoke(RecordingState.RECORDING)
     }
 
@@ -90,7 +91,7 @@ class WhisperManager @JvmOverloads constructor(
         if (!recorder.isActive) return
         vibrate(100)
         val file = recorder.stop()
-        if (file == null) { onStateChanged?.invoke(RecordingState.IDLE); return }
+        if (file == null) { DictationAudioService.stop(context); onStateChanged?.invoke(RecordingState.IDLE); return }
         recordingFile = file
         startTranscription(file, false)
     }
@@ -116,6 +117,7 @@ class WhisperManager @JvmOverloads constructor(
                 file.delete()
                 recordingFile = null
             }
+            DictationAudioService.stop(context)
             Toast.makeText(context, "Add an OpenRouter API key to retry", Toast.LENGTH_LONG).show()
             onStateChanged?.invoke(recordingState)
             return
@@ -190,6 +192,7 @@ class WhisperManager @JvmOverloads constructor(
                 if (succeeded) failedRecording.delete()
                 if (!retry) file.delete()
                 if (operationId == requestOperation) {
+                    DictationAudioService.stop(context)
                     recordingFile = null; job = null; transcribing = false; cleaning = false
                     onStateChanged?.invoke(recordingState)
                 }
@@ -209,6 +212,7 @@ class WhisperManager @JvmOverloads constructor(
     fun cancelCurrent(showMessage: Boolean = false) {
         val wasActive = recorder.isActive || transcribing
         operationId++; recorder.cancel()
+        DictationAudioService.stop(context)
         val activeJob = job
         activeJob?.cancel(); job = null
         if (activeJob == null) recordingFile?.delete()

@@ -311,6 +311,7 @@ function renderSettings(settings) {
   $('live-chunks').checked = !!settings.liveChunks;
   $('double-transcription').checked = !!settings.doubleTranscription;
   $('lock-mode').checked = settings.lockMode !== false;
+  $('pause-media').checked = settings.pauseMedia !== false;
   $('auto-learn').checked = settings.autoLearn !== false;
   $('transcription-model').value = settings.transcriptionModel || 'mai-transcribe-2-clean';
   $('cleanup-mode').value = settings.cleanupMode || 'off';
@@ -400,7 +401,7 @@ $('settings-form').onsubmit = async event => {
   if (capturingShortcut) { await call('captureShortcut', { enabled: false }).catch(() => {}); capturingShortcut = false; $('rebind-shortcut').textContent = 'Change shortcut'; }
   try {
     const dictionaryTerms = $('dictionary-terms').value.split(/\r?\n/).map(term => term.trim()).filter(Boolean);
-    const settings = await call('saveSettings', { apiKey: $('api-key').value, xaiApiKey: $('xai-api-key').value, gatewayApiKey: $('gateway-api-key').value, liveChunks: $('live-chunks').checked, doubleTranscription: $('double-transcription').checked, lockMode: $('lock-mode').checked, autoLearn: $('auto-learn').checked, transcriptionModel: $('transcription-model').value, cleanupMode: $('cleanup-mode').value, microphoneDeviceId: $('microphone-device').value, shortcut: draftShortcut, dictionaryTerms });
+    const settings = await call('saveSettings', { apiKey: $('api-key').value, xaiApiKey: $('xai-api-key').value, gatewayApiKey: $('gateway-api-key').value, liveChunks: $('live-chunks').checked, doubleTranscription: $('double-transcription').checked, lockMode: $('lock-mode').checked, autoLearn: $('auto-learn').checked, pauseMedia: $('pause-media').checked, transcriptionModel: $('transcription-model').value, cleanupMode: $('cleanup-mode').value, microphoneDeviceId: $('microphone-device').value, shortcut: draftShortcut, dictionaryTerms });
     $('api-key').value = ''; $('xai-api-key').value = ''; $('gateway-api-key').value = '';
     renderSettings(settings); $('save-message').textContent = 'Settings saved';
   } catch (error) { toast(error.message); } finally { button.disabled = false; }

@@ -22,6 +22,8 @@ internal sealed class EngineApp : ApplicationContext
     private readonly Gesture gesture;
     private readonly Channel<object> output = Channel.CreateUnbounded<object>();
     private readonly JsonSerializerOptions json = new(JsonSerializerDefaults.Web);
+    private DictationAudio? dictationAudio;
+    private bool pauseMedia = true;
     private Recorder? recorder;
     private ITranscriptionSession? session;
     private Task<InsertionContext>? insertionContext;
@@ -58,7 +60,7 @@ internal sealed class EngineApp : ApplicationContext
         });
         try { Settings.RemoveLegacyBalanceKey(); }
         catch { Notify("The old saved management key could not be removed. Delete balance-key.bin from LocalWhisper's local app data folder."); }
-        try { apiKey = Settings.LoadKey(); xaiApiKey = Settings.LoadXaiKey(); gatewayApiKey = Settings.LoadGatewayKey(); liveChunks = Settings.LiveChunks; doubleTranscription = Settings.DoubleTranscription; lockMode = Settings.LockMode; autoLearn = Settings.AutoLearn; cleanupMode = Settings.CleanupMode; transcriptionModel = Settings.TranscriptionModel; dictionaryTerms = Settings.LoadDictionaryTerms(); }
+        try { apiKey = Settings.LoadKey(); xaiApiKey = Settings.LoadXaiKey(); gatewayApiKey = Settings.LoadGatewayKey(); liveChunks = Settings.LiveChunks; doubleTranscription = Settings.DoubleTranscription; lockMode = Settings.LockMode; autoLearn = Settings.AutoLearn; pauseMedia = Settings.PauseMedia; cleanupMode = Settings.CleanupMode; transcriptionModel = Settings.TranscriptionModel; dictionaryTerms = Settings.LoadDictionaryTerms(); }
         catch { Notify("Saved settings could not be read. Please open Settings."); }
         try { microphoneDeviceId = Settings.MicrophoneDeviceId; }
         catch { Notify("The saved microphone could not be read. Using the system default."); }
@@ -114,7 +116,7 @@ internal sealed class EngineApp : ApplicationContext
             if (!exiting) dispatcher.BeginInvoke(ExitThread);
         });
     }
-    private object SettingsState() => new { hasKey = !string.IsNullOrWhiteSpace(apiKey), hasXaiKey = !string.IsNullOrWhiteSpace(xaiApiKey), hasGatewayKey = !string.IsNullOrWhiteSpace(gatewayApiKey), models = TranscriptionModels.All, liveChunks, doubleTranscription, lockMode, autoLearn, cleanupMode, transcriptionModel, dictionaryTerms, shortcut = shortcutBinding, microphoneDeviceId, microphones = MicrophoneDevices.Available() };
+    private object SettingsState() => new { hasKey = !string.IsNullOrWhiteSpace(apiKey), hasXaiKey = !string.IsNullOrWhiteSpace(xaiApiKey), hasGatewayKey = !string.IsNullOrWhiteSpace(gatewayApiKey), models = TranscriptionModels.All, liveChunks, doubleTranscription, lockMode, autoLearn, pauseMedia, cleanupMode, transcriptionModel, dictionaryTerms, shortcut = shortcutBinding, microphoneDeviceId, microphones = MicrophoneDevices.Available() };
     private void Emit(object value) => output.Writer.TryWrite(value);
     private void Notify(string message) => Emit(new { type = "notice", message });
     private void PublishState() => Emit(new { type = "state", mode = cancelled || metrics?.Snapshot().PasteMs is not null ? "Idle" : gesture.Mode.ToString(), phase = processingPhase, level = recorder?.Level ?? 0, id = entryId, metrics = metrics?.Snapshot() });
@@ -182,6 +184,7 @@ internal sealed class EngineApp : ApplicationContext
                     if (values.TryGetProperty("liveChunks", out var live)) { liveChunks = live.GetBoolean(); Settings.SaveLiveChunks(liveChunks); }
                     if (values.TryGetProperty("doubleTranscription", out var doubled)) { doubleTranscription = doubled.GetBoolean(); Settings.SaveDoubleTranscription(doubleTranscription); }
                     if (values.TryGetProperty("lockMode", out var lockSetting)) { lockMode = lockSetting.GetBoolean(); Settings.SaveLockMode(lockMode); gesture.LockByDefault = lockMode; }
+                    if (values.TryGetProperty("pauseMedia", out var pause)) { pauseMedia = pause.GetBoolean(); Settings.SavePauseMedia(pauseMedia); }
                     if (values.TryGetProperty("autoLearn", out var learning)) { autoLearn = learning.GetBoolean(); Settings.SaveAutoLearn(autoLearn); if (!autoLearn) correctionObservation?.Cancel(); }
                     if (values.TryGetProperty("cleanupMode", out var cleanup)) { Settings.SaveCleanupMode(cleanup.GetString() ?? ""); cleanupMode = Settings.CleanupMode; }
                     if (values.TryGetProperty("transcriptionModel", out var model)) { Settings.SaveTranscriptionModel(model.GetString() ?? ""); transcriptionModel = Settings.TranscriptionModel; }
@@ -256,11 +259,13 @@ internal sealed class EngineApp : ApplicationContext
                 var recorderMode = created.Mode;
                 recorder = new Recorder(recorderMode, MicrophoneDevices.Resolve(microphoneDeviceId));
                 if (session is not null) recorder.ChunkReady += session.EnqueuePcm;
+                if (pauseMedia) dictationAudio = new DictationAudio();
                 using (metrics.Measure("Open microphone")) recorder.Start();
             }
             catch (Exception ex)
             {
                 recorder?.Dispose(); recorder = null; gesture.Reset();
+                if (dictationAudio is { } failedAudioControl) { dictationAudio = null; _ = failedAudioControl.RestoreAsync(); }
                 operation.Cancel(); operation.Dispose(); operation = null; session = null;
                 insertionContext = null;
                 recordingStage.Dispose(); recordingStage = null;
@@ -274,9 +279,10 @@ internal sealed class EngineApp : ApplicationContext
     private async Task FinishAsync(bool restoreTarget)
     {
         var capture = recorder; recorder = null;
+        var audioControl = dictationAudio;
         var active = session; var trace = metrics; var cancellation = operation; var id = entryId;
         var capturedContext = insertionContext; insertionContext = null;
-        if (capture is null || active is null || trace is null || cancellation is null) { gesture.Reset(); PublishState(); return; }
+        if (capture is null || active is null || trace is null || cancellation is null) { if (audioControl is not null) await audioControl.RestoreAsync(); gesture.Reset(); PublishState(); return; }
         recordingStage?.Dispose(); recordingStage = null; trace.Stopped(); processingPhase = "transcribing"; PublishState();
         var outcome = "Failed"; var rawText = ""; var text = ""; byte[]? audio = null;
         try
@@ -378,6 +384,8 @@ internal sealed class EngineApp : ApplicationContext
         }
         finally
         {
+            if (audioControl is not null) await audioControl.RestoreAsync();
+            if (ReferenceEquals(dictationAudio, audioControl)) dictationAudio = null;
             trace.Complete(outcome); cancellation.Cancel(); cancellation.Dispose(); operation = null; metrics = null; session = null; insertionContext = null; processingPhase = null; gesture.Reset();
             if (!exiting)
             {
@@ -498,6 +506,7 @@ internal sealed class EngineApp : ApplicationContext
     {
         if (microphoneTest is not null) { _ = StopMicrophoneTestAsync(false); return; }
         cancelled = true; operation?.Cancel(); PublishState();
+        if (dictationAudio is { } audioControl) { dictationAudio = null; _ = audioControl.RestoreAsync(); }
         if (gesture.Mode == CaptureMode.Busy) return;
         var capture = recorder; recorder = null;
         recordingStage?.Dispose(); recordingStage = null; metrics?.Complete("Cancelled"); metrics = null;
@@ -513,6 +522,8 @@ internal sealed class EngineApp : ApplicationContext
     {
         if (exiting) return;
         exiting = true; correctionObservation?.Cancel(); timer.Stop(); timer.Dispose(); shortcut?.Dispose(); operation?.Cancel(); recorder?.Dispose(); microphoneTest?.Dispose();
+        DictationAudio.RestoreAllAsync().GetAwaiter().GetResult();
+        dictationAudio = null;
         dispatcher.Dispose(); http.Dispose(); output.Writer.TryComplete(); base.ExitThreadCore();
     }
 }

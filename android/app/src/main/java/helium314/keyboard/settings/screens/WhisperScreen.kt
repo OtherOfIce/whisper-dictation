@@ -31,6 +31,7 @@ import helium314.keyboard.latin.whisper.DictionaryChanges
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import helium314.keyboard.latin.whisper.SecureCredentialStore
+import helium314.keyboard.latin.whisper.DictationAudioService
 import helium314.keyboard.latin.whisper.WhisperManager
 import helium314.keyboard.latin.whisper.MicrophoneInput
 import helium314.keyboard.settings.Setting
@@ -43,6 +44,7 @@ fun WhisperSettingsScreen(onClickBack: () -> Unit, onClickDiagnostics: () -> Uni
     val credentials = remember { SecureCredentialStore(context) }
     var permissionGranted by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { permissionGranted = it }
+    var pauseMedia by remember { mutableStateOf(prefs.getBoolean(DictationAudioService.PREF_PAUSE_MEDIA, true)) }
     var apiKey by remember { mutableStateOf("") }
     var keyStored by remember { mutableStateOf(credentials.hasKey()) }
     var keyError by remember { mutableStateOf<String?>(null) }
@@ -109,6 +111,17 @@ fun WhisperSettingsScreen(onClickBack: () -> Unit, onClickDiagnostics: () -> Uni
                     else keyError = "Could not encrypt and save the API key"
                 }) { Text("Save key") }
                 TextButton(enabled = keyStored, onClick = { credentials.clear(); keyStored = false; apiKey = ""; keyError = null }) { Text("Clear key") }
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) {
+                    Text("Pause media during dictation", style = MaterialTheme.typography.titleSmall)
+                    Text("Ask other apps to pause until voice input finishes. Players control whether they resume. Shows a voice input notification while active.", style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = pauseMedia, onCheckedChange = {
+                    pauseMedia = it
+                    prefs.edit { putBoolean(DictationAudioService.PREF_PAUSE_MEDIA, it) }
+                })
             }
             Spacer(Modifier.height(12.dp))
             LanguageSelector()
