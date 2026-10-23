@@ -158,7 +158,7 @@ class WhisperManager @JvmOverloads constructor(
                     cleaning = true
                     onStateChanged?.invoke(RecordingState.CLEANING)
                 }
-                val text = if (cleanup) try { client.clean(raw, apiKey) } catch (error: Exception) {
+                val text = if (cleanup) try { client.clean(raw, apiKey, keywords) } catch (error: Exception) {
                     if (error is CancellationException) throw error
                     Log.w(TAG, "Luna cleanup failed; inserting original transcript", error)
                     withContext(Dispatchers.Main) {

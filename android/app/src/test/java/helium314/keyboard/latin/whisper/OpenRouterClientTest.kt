@@ -68,6 +68,23 @@ class OpenRouterClientTest {
         assertTrue(error is java.io.IOException)
     }
 
+    @Test fun sendsSharedPromptAndVocabulary() = runBlocking {
+        var request: org.json.JSONObject? = null
+        val client = testClient { chain ->
+            val buffer = okio.Buffer()
+            chain.request().body!!.writeTo(buffer)
+            request = org.json.JSONObject(buffer.readUtf8())
+            response(chain, 200, "{\"choices\":[{\"message\":{\"content\":\"Did Sol win?\"}}]}")
+        }
+        assertEquals("Did Sol win?", client.clean("Did Soul win?", "test-key", listOf("Sol")))
+        val messages = request!!.getJSONArray("messages")
+        val prompt = messages.getJSONObject(0).getString("content")
+        assertTrue(prompt.startsWith("Cleanup") && "\nPauses\n" in prompt && "\nMisheard words\n" in prompt)
+        val input = org.json.JSONObject(messages.getJSONObject(1).getString("content"))
+        assertEquals("Did Soul win?", input.getString("dictation"))
+        assertEquals("Sol", input.getJSONArray("vocabulary").getString(0))
+    }
+
     private fun testClient(interceptor: Interceptor) = OpenRouterClient(OkHttpClient.Builder().addInterceptor(interceptor).build())
 
     private fun audioFile(): File = File.createTempFile("dictation-test", ".wav").apply {

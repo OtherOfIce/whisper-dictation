@@ -71,6 +71,9 @@ android {
         }
     }
 
+    // The Luna cleanup prompt is shared with the desktop engine.
+    sourceSets.getByName("main").resources.srcDir("../../shared/cleanup")
+
     buildFeatures {
         viewBinding = true
         buildConfig = true

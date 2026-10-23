@@ -340,7 +340,7 @@ internal sealed class EngineApp : ApplicationContext
                     using (trace.Measure(cleanupMode == CleanupService.LunaFast ? "AI cleanup (Luna Fast)" : "AI cleanup (Luna)"))
                     {
                         var tier = cleanupMode == CleanupService.LunaFast ? CleanupServiceTier.Fast : CleanupServiceTier.Standard;
-                        var result = await new CleanupService(http).CleanupAsync(rawText, context, apiKey, tier, cancellation.Token);
+                        var result = await new CleanupService(http, dictionaryTerms).CleanupAsync(rawText, context, apiKey, tier, cancellation.Token);
                         text = result.Text; trace.Cost("cleanup", result.Model, result.Cost);
                     }
                 }
