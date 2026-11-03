@@ -31,6 +31,31 @@ if (string.IsNullOrWhiteSpace(key))
 var cases = new[]
 {
     new EvalCase(
+        "retrospective correction preserves question",
+        "Do you think they were intending to launch with a new model release? Sorry, I meant to end with. I think that would have made a lot of sense, and I know there were some recent rumors about people seeing it. What can you find out about that?",
+        ["Do you think they were intending to end with a new model release?", "I think that would have made a lot of sense", "about people seeing it", "What can you find out about that?"],
+        ["launch with", "Sorry", "I meant"]),
+    new EvalCase(
+        "retrospective correction preserves suffix",
+        "Please book the meeting for Tuesday at three. Sorry, I meant Thursday. Send everyone an invitation.",
+        ["Please book the meeting for Thursday at three", "Send everyone an invitation"],
+        ["Tuesday", "Sorry", "I meant"]),
+    new EvalCase(
+        "retrospective correction minimal",
+        "Were they intending to launch with a new model? Sorry, I meant to end with.",
+        ["Were they intending to end with a new model?"],
+        ["launch with", "Sorry", "I meant"]),
+    new EvalCase(
+        "retrospective correction unseen verb",
+        "Should we open with the customer questions? Sorry, I meant close with. That would leave more time for the demo.",
+        ["Should we close with the customer questions?", "That would leave more time for the demo"],
+        ["open with", "Sorry", "I meant"]),
+    new EvalCase(
+        "retrospective correction unseen detail",
+        "Can you send the revised proposal to Alice before lunch? Sorry, I meant to Priya. Keep the finance team copied.",
+        ["Can you send the revised proposal to Priya before lunch?", "Keep the finance team copied"],
+        ["Alice", "Sorry", "I meant"]),
+    new EvalCase(
         "self-correction",
         "The meeting is Tuesday, actually Wednesday, at three, no make that four p.m.",
         ["Wednesday", "p.m."],
@@ -128,6 +153,16 @@ var cases = new[]
         ["productions"])
 };
 
+var caseFilter = Argument(args, "--case");
+if (caseFilter is not null)
+{
+    cases = cases.Where(value => value.Name.Contains(caseFilter, StringComparison.OrdinalIgnoreCase)).ToArray();
+    if (cases.Length == 0) { Console.Error.WriteLine("No cases matched --case."); return 2; }
+}
+var repeat = IntArgument(args, "--repeat") ?? 1;
+if (repeat < 1) { Console.Error.WriteLine("--repeat must be positive."); return 2; }
+cases = Enumerable.Range(0, repeat).SelectMany(_ => cases).ToArray();
+
 using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
 var profile = new CleanupRequestProfile(model, reasoningEffort, provider, SendServiceTier: model == CleanupService.Model,
     MinimumCompletionTokens: minimumCompletionTokens, Prompt: selectedPrompt);
@@ -198,7 +233,7 @@ if (outputPath is not null)
     Console.WriteLine($"Report: {fullPath}");
 }
 
-return runs.Any(run => run.Error is not null) ? 1 : 0;
+return runs.Any(run => run.Error is not null || run.ChecksPassed != run.ChecksTotal) ? 1 : 0;
 
 static (int Passed, int Total) Score(EvalCase evalCase, string output)
 {

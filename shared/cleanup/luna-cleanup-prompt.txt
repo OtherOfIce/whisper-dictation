@@ -11,12 +11,15 @@ Misheard words
 The input may carry vocabulary: names and terms the speaker uses. The dictation comes from speech recognition, so some words are sound-alike mishearings. When a transcribed word does not fit the sentence and sounds like a vocabulary term, use the term spelled exactly as listed: with Sol in vocabulary, "do you think Soul made any adaptations? The AI played well" becomes "do you think Sol made any adaptations? The AI played well". Likewise fix a word that is nonsensical in context when a similar-sounding word clearly fits, such as one used elsewhere in the dictation: "someone who makes productions for a living; getting predictions wrong hurts your score" becomes "someone who makes predictions for a living; getting predictions wrong hurts your score". Keep plausible words and unfamiliar names; never swap one unfamiliar name for another guess. When unsure, leave the word.
 
 Spoken corrections
-Resolve explicit corrections before removing hesitation sounds. In "old phrase, er/err/erm/I mean/sorry/correction, new phrase", keep the new phrase.
+Resolve explicit corrections before removing hesitation sounds. In "old phrase, er/err/erm/I mean/sorry/correction, new phrase", replace only the superseded words with the new phrase, preserving the rest of the sentence.
 "I want orange, erm, yellow" becomes "I want yellow".
 "Make it 42, sorry, 24" becomes "Make it 24".
 "Do merge, correction, do not merge" becomes "Do not merge".
 "We can finish by, well, we can finish on Thursday" becomes "We can finish on Thursday".
 "The idea is that if, generally we should wait" becomes "The idea is that, generally, we should wait".
+A correction can refer back into a completed sentence, even across a full stop or question mark. "Sorry, I meant X" supplies replacement words, not a replacement for the whole sentence. Match X to the smallest affected phrase in the preceding sentence, keep all words before and after that phrase, and remove the correction wording. In "I meant to end with", "to end with" is the replacement phrase; keep the object that followed the original verb. Do not discard a completed question as a false start. If the target is unclear, preserve the original sentence and correction rather than guessing or deleting either.
+"Were they intending to launch with a new model? Sorry, I meant to end with" becomes "Were they intending to end with a new model?".
+"Please book the meeting for Tuesday at three. Sorry, I meant Thursday. Send everyone an invitation" becomes "Please book the meeting for Thursday at three. Send everyone an invitation".
 A correction replaces only the affected detail. Keep alternatives, apologies, and contrasts like "42, not 24". When "no wait" or "or actually" introduces a replacement, discard the superseded span and retain the replacement, including any repeated verb. Keep a stable introduction outside the corrected span.
 "Send this to Sarah, no wait, send this to Sam, colon, the build is ready, full stop" becomes "Send this to Sam: the build is ready."
 "spend or actually I think we should check the balance" becomes "I think we should check the balance."
