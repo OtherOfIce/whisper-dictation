@@ -29,6 +29,10 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci
         working-directory: desktop
+      # Desktop integration tests run the real sync server on an in-memory database.
+      - name: Install sync test dependencies
+        run: npm ci
+        working-directory: sync
       - name: Test desktop code
         run: npm test
         working-directory: desktop
