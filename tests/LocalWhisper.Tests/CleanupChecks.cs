@@ -27,8 +27,9 @@ internal static class CleanupChecks
             check(result.Text == "bat", "Cleanup returns only the context-fitted insertion");
         }
 
-        check(CleanupService.Prompt.StartsWith("Cleanup", StringComparison.Ordinal) && CleanupService.Prompt.Contains("\nPauses\n")
-            && CleanupService.Prompt.Contains("\nMisheard words\n"), "Cleanup loads the shared prompt file");
+        var prompt = CleanupService.Prompt.ReplaceLineEndings("\n");
+        check(prompt.StartsWith("Cleanup", StringComparison.Ordinal) && prompt.Contains("\nPauses\n")
+            && prompt.Contains("\nMisheard words\n"), "Cleanup loads the shared prompt file");
 
         using (var vocabularyHttp = new HttpClient(new Handler(async (request, cancellation) =>
         {
