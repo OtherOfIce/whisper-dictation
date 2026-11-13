@@ -42,6 +42,7 @@ internal sealed class EngineApp : ApplicationContext
     private string[] dictionaryTerms = [];
     private readonly Dictionary<string, string> learnedEntries = new();
     private CancellationTokenSource? correctionObservation;
+    private readonly IDisposable? microphoneWatch;
     private nint target;
     private bool liveChunks, doubleTranscription, lockMode = true, autoLearn = true, cancelled, exiting;
     private long lastTick = Environment.TickCount64, lastPublish;
@@ -58,6 +59,9 @@ internal sealed class EngineApp : ApplicationContext
                 await Console.Out.FlushAsync();
             }
         });
+        _ = DictationAudio.RecoverMutedAsync();
+        try { microphoneWatch = MicrophoneDevices.Watch(); }
+        catch (Exception ex) { EngineLog.Error("Watching microphone changes", ex); }
         try { Settings.RemoveLegacyBalanceKey(); }
         catch { Notify("The old saved management key could not be removed. Delete balance-key.bin from LocalWhisper's local app data folder."); }
         try { apiKey = Settings.LoadKey(); xaiApiKey = Settings.LoadXaiKey(); gatewayApiKey = Settings.LoadGatewayKey(); liveChunks = Settings.LiveChunks; doubleTranscription = Settings.DoubleTranscription; lockMode = Settings.LockMode; autoLearn = Settings.AutoLearn; pauseMedia = Settings.PauseMedia; cleanupMode = Settings.CleanupMode; transcriptionModel = Settings.TranscriptionModel; dictionaryTerms = Settings.LoadDictionaryTerms(); }
@@ -116,7 +120,7 @@ internal sealed class EngineApp : ApplicationContext
             if (!exiting) dispatcher.BeginInvoke(ExitThread);
         });
     }
-    private object SettingsState() => new { hasKey = !string.IsNullOrWhiteSpace(apiKey), hasXaiKey = !string.IsNullOrWhiteSpace(xaiApiKey), hasGatewayKey = !string.IsNullOrWhiteSpace(gatewayApiKey), models = TranscriptionModels.All, liveChunks, doubleTranscription, lockMode, autoLearn, pauseMedia, cleanupMode, transcriptionModel, dictionaryTerms, shortcut = shortcutBinding, microphoneDeviceId, microphones = MicrophoneDevices.Available() };
+    private object SettingsState() => new { hasKey = !string.IsNullOrWhiteSpace(apiKey), hasXaiKey = !string.IsNullOrWhiteSpace(xaiApiKey), hasGatewayKey = !string.IsNullOrWhiteSpace(gatewayApiKey), models = TranscriptionModels.All, liveChunks, doubleTranscription, lockMode, autoLearn, pauseMedia, cleanupMode, transcriptionModel, dictionaryTerms, shortcut = shortcutBinding, microphoneDeviceId, microphones = MicrophoneDevices.Cached };
     // Settings shared between devices, and the saved API keys. Only the main process of the desktop app asks for this;
     // keys are never sent to the renderer. Keys come from saved files, not environment variables.
     private object SyncState() => new
@@ -179,7 +183,7 @@ internal sealed class EngineApp : ApplicationContext
     private void PublishState() => Emit(new { type = "state", mode = cancelled || metrics?.Snapshot().PasteMs is not null ? "Idle" : gesture.Mode.ToString(), phase = processingPhase, level = recorder?.Level ?? 0, id = entryId, metrics = metrics?.Snapshot() });
     private async void Handle(JsonElement command)
     {
-        var id = command.TryGetProperty("id", out var requestId) ? requestId.GetInt32() : 0;
+        var id = RequestId(command);
         try
         {
             var method = command.GetProperty("method").GetString();
@@ -187,7 +191,7 @@ internal sealed class EngineApp : ApplicationContext
             switch (method)
             {
                 case "settings": result = SettingsState(); break;
-                case "microphones": result = MicrophoneDevices.Available(); break;
+                case "microphones": result = MicrophoneDevices.Refresh(); break;
                 case "captureShortcut":
                     var capturing = command.GetProperty("params").GetProperty("enabled").GetBoolean();
                     if (capturing && gesture.Mode != CaptureMode.Idle) throw new InvalidOperationException("Finish recording before changing the shortcut.");
@@ -236,16 +240,23 @@ internal sealed class EngineApp : ApplicationContext
                     var nextModel = values.TryGetProperty("transcriptionModel", out var selectedModel)
                         ? selectedModel.GetString() ?? "" : transcriptionModel;
                     TranscriptionModels.ValidateDictionary(nextModel, nextDictionary);
-                    if (values.TryGetProperty("apiKey", out var key) && !string.IsNullOrWhiteSpace(key.GetString())) { Settings.SaveKey(key.GetString()!.Trim()); apiKey = Settings.LoadKey(); }
-                    if (values.TryGetProperty("xaiApiKey", out var xaiKey) && !string.IsNullOrWhiteSpace(xaiKey.GetString())) { Settings.SaveXaiKey(xaiKey.GetString()!.Trim()); xaiApiKey = Settings.LoadXaiKey(); }
-                    if (values.TryGetProperty("gatewayApiKey", out var gatewayKey) && !string.IsNullOrWhiteSpace(gatewayKey.GetString())) { Settings.SaveGatewayKey(gatewayKey.GetString()!.Trim()); gatewayApiKey = Settings.LoadGatewayKey(); }
-                    if (values.TryGetProperty("liveChunks", out var live)) { liveChunks = live.GetBoolean(); Settings.SaveLiveChunks(liveChunks); }
-                    if (values.TryGetProperty("doubleTranscription", out var doubled)) { doubleTranscription = doubled.GetBoolean(); Settings.SaveDoubleTranscription(doubleTranscription); }
-                    if (values.TryGetProperty("lockMode", out var lockSetting)) { lockMode = lockSetting.GetBoolean(); Settings.SaveLockMode(lockMode); gesture.LockByDefault = lockMode; }
-                    if (values.TryGetProperty("pauseMedia", out var pause)) { pauseMedia = pause.GetBoolean(); Settings.SavePauseMedia(pauseMedia); }
-                    if (values.TryGetProperty("autoLearn", out var learning)) { autoLearn = learning.GetBoolean(); Settings.SaveAutoLearn(autoLearn); if (!autoLearn) correctionObservation?.Cancel(); }
-                    if (values.TryGetProperty("cleanupMode", out var cleanup)) { Settings.SaveCleanupMode(cleanup.GetString() ?? ""); cleanupMode = Settings.CleanupMode; }
-                    if (values.TryGetProperty("transcriptionModel", out var model)) { Settings.SaveTranscriptionModel(model.GetString() ?? ""); transcriptionModel = Settings.TranscriptionModel; }
+                    // Read and validate every value before writing any, so a bad value cannot leave settings half saved.
+                    var nextCleanup = values.TryGetProperty("cleanupMode", out var cleanup) ? cleanup.GetString() ?? "" : null;
+                    if (nextCleanup is not null && !CleanupService.IsMode(nextCleanup)) throw new InvalidOperationException("Invalid cleanup mode.");
+                    string? NewKey(string name) => values.TryGetProperty(name, out var value) && value.GetString() is { } text && !string.IsNullOrWhiteSpace(text) ? text.Trim() : null;
+                    bool? Flag(string name) => values.TryGetProperty(name, out var value) ? value.GetBoolean() : null;
+                    var (newKey, newXaiKey, newGatewayKey) = (NewKey("apiKey"), NewKey("xaiApiKey"), NewKey("gatewayApiKey"));
+                    var (nextLive, nextDouble, nextLock, nextPause, nextLearn) = (Flag("liveChunks"), Flag("doubleTranscription"), Flag("lockMode"), Flag("pauseMedia"), Flag("autoLearn"));
+                    if (newKey is not null) { Settings.SaveKey(newKey); apiKey = Settings.LoadKey(); }
+                    if (newXaiKey is not null) { Settings.SaveXaiKey(newXaiKey); xaiApiKey = Settings.LoadXaiKey(); }
+                    if (newGatewayKey is not null) { Settings.SaveGatewayKey(newGatewayKey); gatewayApiKey = Settings.LoadGatewayKey(); }
+                    if (nextLive is { } live) { liveChunks = live; Settings.SaveLiveChunks(liveChunks); }
+                    if (nextDouble is { } doubled) { doubleTranscription = doubled; Settings.SaveDoubleTranscription(doubleTranscription); }
+                    if (nextLock is { } lockSetting) { lockMode = lockSetting; Settings.SaveLockMode(lockMode); gesture.LockByDefault = lockMode; }
+                    if (nextPause is { } pause) { pauseMedia = pause; Settings.SavePauseMedia(pauseMedia); }
+                    if (nextLearn is { } learning) { autoLearn = learning; Settings.SaveAutoLearn(autoLearn); if (!autoLearn) correctionObservation?.Cancel(); }
+                    if (nextCleanup is not null) { Settings.SaveCleanupMode(nextCleanup); cleanupMode = Settings.CleanupMode; }
+                    if (values.TryGetProperty("transcriptionModel", out _)) { Settings.SaveTranscriptionModel(nextModel); transcriptionModel = Settings.TranscriptionModel; }
                     if (values.TryGetProperty("microphoneDeviceId", out _)) { Settings.SaveMicrophoneDeviceId(nextMicrophone); microphoneDeviceId = nextMicrophone; }
                     Settings.SaveDictionaryTerms(nextDictionary); dictionaryTerms = nextDictionary; learnedEntries.Clear();
                     if (nextShortcut != shortcutBinding)
@@ -296,15 +307,25 @@ internal sealed class EngineApp : ApplicationContext
             }
             Emit(new { type = "reply", id, result });
         }
-            catch (Exception ex) { Emit(new { type = "reply", id, error = ex is InvalidOperationException or HttpRequestException or AggregateException ? ex.Message : "The request failed. Check your key or connection and try again." }); }
+        catch (Exception ex)
+        {
+            var expected = ex is InvalidOperationException or HttpRequestException or AggregateException;
+            // Without an id the host cannot match a reply, so the failure is only logged.
+            if (id == 0 || !expected) EngineLog.Error(id == 0 ? "Malformed command" : "Command failed", ex);
+            if (id != 0) Emit(new { type = "reply", id, error = expected ? ex.Message : "The request failed. Check your key or connection and try again." });
+        }
     }
+    // Host request ids start at 1; 0 means the command carried no usable id. Never throws.
+    internal static int RequestId(JsonElement command) =>
+        command.ValueKind == JsonValueKind.Object && command.TryGetProperty("id", out var value)
+        && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var id) ? id : 0;
     private void Apply(GestureAction action, bool restoreTarget = false)
     {
         if (exiting) return;
         if (action == GestureAction.Start)
         {
             if (microphoneTest is not null) { gesture.Reset(); Notify("Stop the microphone test before dictating."); return; }
-            correctionObservation?.Cancel(); correctionObservation = null;
+            correctionObservation?.Cancel(); correctionObservation?.Dispose(); correctionObservation = null;
             var effectiveCleanup = cleanupMode;
             if (!Pipeline().Available(transcriptionModel, dictionaryTerms)
                 || (effectiveCleanup != CleanupService.Off && string.IsNullOrWhiteSpace(apiKey)))
@@ -350,20 +371,30 @@ internal sealed class EngineApp : ApplicationContext
         var outcome = "Failed"; var rawText = ""; var text = ""; byte[]? audio = null;
         try
         {
-            byte[] pcm;
+            byte[] pcm; Exception? microphoneFault = null; double seconds = 0;
             using (trace.Measure("Stop microphone")) pcm = await Task.Run(async () =>
             {
                 using (capture)
                 {
+                    // A disconnected or faulted microphone still returns what it captured before failing.
                     var tail = await capture.StopPcmAsync().ConfigureAwait(false);
+                    microphoneFault = capture.Fault; seconds = capture.Seconds;
                     audio = capture.RecordedWav();
-                    trace.Audio(capture.Seconds, (long)(capture.Seconds * 32000)); return tail;
+                    trace.Audio(seconds, (long)(seconds * 32000)); return tail;
                 }
             });
+            if (microphoneFault is not null) EngineLog.Error("Microphone stopped unexpectedly", microphoneFault);
             cancellation.Token.ThrowIfCancellationRequested();
-            if (audio is null || audio.Length < 6444) { cancellation.Cancel(); outcome = "Too short"; return; }
+            if (audio is null || audio.Length < 6444)
+            {
+                cancellation.Cancel();
+                if (microphoneFault is null) { outcome = "Too short"; return; }
+                outcome = "Microphone error"; audio = null;
+                Notify("The microphone disconnected before any speech was recorded. Check the microphone and try again."); return;
+            }
+            if (microphoneFault is not null) Notify("The microphone disconnected. Transcribing the audio recorded before that.");
             // One budget covers the live finish and every recovery provider/retry.
-            cancellation.CancelAfter(TimeSpan.FromSeconds(15));
+            cancellation.CancelAfter(TranscriptionDeadline(seconds));
             {
                 active.EnqueuePcm(pcm);
                 Exception? primaryFailure = null;
@@ -429,6 +460,7 @@ internal sealed class EngineApp : ApplicationContext
                     Probe(snapshot is null ? "pasted-without-capture" : "pasted-with-capture");
                     if (snapshot is not null && autoLearn)
                     {
+                        correctionObservation?.Cancel(); correctionObservation?.Dispose();
                         correctionObservation = new CancellationTokenSource();
                         var observation = correctionObservation;
                         var learnedByIndex = new Dictionary<int, string>();
@@ -501,6 +533,10 @@ internal sealed class EngineApp : ApplicationContext
         }
         catch (Exception) { Probe("learn-error"); Notify("Could not save the learned word. Check your dictionary in Settings."); return null; }
     }
+    // Scales with recording length so long dictations are not cut off by a deadline sized for short ones.
+    internal static TimeSpan TranscriptionDeadline(double audioSeconds) => TimeSpan.FromSeconds(Math.Min(120, 15 + 0.5 * Math.Max(0, audioSeconds)));
+    // Retries and alternate transcripts are user-initiated and run outside dictation, but must not hang forever.
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(3);
     private TranscriptionPipeline Pipeline() => new(http, new(apiKey, xaiApiKey, gatewayApiKey));
     private ModelTranscription CreateModelTranscription(SessionMetrics trace, IReadOnlyList<string> dictionary, bool doubleTranscription = false) => Pipeline().Recorded(trace, dictionary, doubleTranscription);
     private static string ModelLabel(string model) => TranscriptionModels.Describe(model).Label;
@@ -514,9 +550,15 @@ internal sealed class EngineApp : ApplicationContext
         var comparisonMetrics = new SessionMetrics { CleanupMode = CleanupService.Off };
         comparisonMetrics.Audio(Transcriber.EstimateAudioSeconds(source, format), source.Length);
         var modelTranscription = CreateModelTranscription(comparisonMetrics, dictionaryTerms);
-        var result = useFallback
-            ? await modelTranscription.TranscribeWithFallbackAsync(source, format, model, dictionaryTerms, comparisonMetrics, CancellationToken.None).ConfigureAwait(false)
-            : await modelTranscription.TranscribeExactAsync(source, format, model, dictionaryTerms, comparisonMetrics, CancellationToken.None).ConfigureAwait(false);
+        using var timeout = new CancellationTokenSource(RequestTimeout);
+        ModelTranscriptionResult result;
+        try
+        {
+            result = useFallback
+                ? await modelTranscription.TranscribeWithFallbackAsync(source, format, model, dictionaryTerms, comparisonMetrics, timeout.Token).ConfigureAwait(false)
+                : await modelTranscription.TranscribeExactAsync(source, format, model, dictionaryTerms, comparisonMetrics, timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested) { throw new InvalidOperationException("Transcription timed out. Try again."); }
         comparisonMetrics.Complete(useFallback ? "Retried" : "Alternate transcript");
         return new { text = result.Text, rawText = result.Text, metrics = comparisonMetrics.Snapshot() };
     }
@@ -547,8 +589,14 @@ internal sealed class EngineApp : ApplicationContext
         retryMetrics.TranscriptionModel = saved.TranscriptionModel;
         retryMetrics.RequestedTranscriptionModel = saved.TranscriptionModel;
         retryMetrics.CleanupMode = CleanupService.Off;
-        var retried = await CreateModelTranscription(retryMetrics, saved.Dictionary).TranscribeExactAsync(
-            saved.Audio, "wav", saved.TranscriptionModel, saved.Dictionary, retryMetrics, CancellationToken.None).ConfigureAwait(false);
+        using var timeout = new CancellationTokenSource(RequestTimeout);
+        ModelTranscriptionResult retried;
+        try
+        {
+            retried = await CreateModelTranscription(retryMetrics, saved.Dictionary).TranscribeExactAsync(
+                saved.Audio, "wav", saved.TranscriptionModel, saved.Dictionary, retryMetrics, timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested) { throw new InvalidOperationException("The retry timed out. Try again."); }
         var text = retried.Text;
         if (string.IsNullOrWhiteSpace(text)) throw new InvalidOperationException("The retry returned no speech. Try again.");
         retryMetrics.Complete("Retried");
@@ -595,8 +643,10 @@ internal sealed class EngineApp : ApplicationContext
     protected override void ExitThreadCore()
     {
         if (exiting) return;
-        exiting = true; correctionObservation?.Cancel(); timer.Stop(); timer.Dispose(); shortcut?.Dispose(); operation?.Cancel(); recorder?.Dispose(); microphoneTest?.Dispose();
-        DictationAudio.RestoreAllAsync().GetAwaiter().GetResult();
+        exiting = true; correctionObservation?.Cancel(); timer.Stop(); timer.Dispose(); shortcut?.Dispose(); operation?.Cancel(); recorder?.Dispose(); microphoneTest?.Dispose(); microphoneWatch?.Dispose();
+        // A stuck media session must not keep the engine alive; muted devices are also restored at next start.
+        try { if (!DictationAudio.RestoreAllAsync().Wait(TimeSpan.FromSeconds(2))) EngineLog.Error("Shutdown", new TimeoutException("Audio restore did not finish in 2 s.")); }
+        catch (Exception ex) { EngineLog.Error("Shutdown audio restore", ex); }
         dictationAudio = null;
         dispatcher.Dispose(); http.Dispose(); output.Writer.TryComplete(); base.ExitThreadCore();
     }

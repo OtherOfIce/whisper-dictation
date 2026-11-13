@@ -61,9 +61,7 @@ internal sealed class TranscriptionPipeline(HttpClient http, TranscriptionCreden
     private static (byte[] Bytes, string Format) Encode(byte[] audio, SessionMetrics metrics)
     {
         using var stage = metrics.Measure("Compress audio");
-        try { return AudioEncoding.Compress(audio); }
-        catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or InvalidOperationException)
-        { return (audio, "wav"); }
+        return AudioEncoding.CompressOrWav(audio);
     }
     private static byte[] DecodePcm(byte[] audio, string format)
     {

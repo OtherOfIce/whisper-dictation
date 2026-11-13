@@ -3,6 +3,9 @@
 export const MAX_DEVICES = 20;
 export const MAX_FAILURES_PER_HOUR = 10;
 export const PAIRING_TTL_MS = 10 * 60 * 1000;
+// Reported by /account/me and /sync/items. 2: every device of an account may list, pair, update and remove devices,
+// and changing the passphrase needs proof of the current one.
+export const SERVER_VERSION = 2;
 export const TOKEN_PATTERN = /^lwd_[A-Za-z0-9_-]{43}$/;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const ENVELOPE = /^v1\.[A-Za-z0-9+/=]{16}\.[A-Za-z0-9+/=]{24,4000}$/;

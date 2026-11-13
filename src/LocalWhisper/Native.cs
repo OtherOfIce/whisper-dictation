@@ -166,9 +166,8 @@ internal sealed class Paste
         // check (null) fails open so paste behavior is unchanged when UI Automation cannot tell.
         if (textTarget is not null && await textTarget(target, cancellation) is false) return false;
         cancellation.ThrowIfCancellationRequested();
-        IDataObject? previous = null;
-        try { previous = Clipboard.GetDataObject(); } catch (ExternalException) { }
-        Clipboard.SetText(text);
+        var previous = Snapshot();
+        Clipboard.SetDataObject(Private(new DataObject(DataFormats.UnicodeText, text)), true);
         var sequence = Native.GetClipboardSequenceNumber();
         try
         {
@@ -192,6 +191,28 @@ internal sealed class Paste
             await Task.Delay(700);
             Restore(previous, sequence);
         }
+    }
+    private static readonly string[] RestoredFormats = [DataFormats.UnicodeText, DataFormats.Rtf, DataFormats.Html, DataFormats.FileDrop, DataFormats.Bitmap];
+    // The live clipboard object reflects whatever is on the clipboard later, so copy the common formats now.
+    private static DataObject? Snapshot()
+    {
+        try
+        {
+            if (Clipboard.GetDataObject() is not { } current) return null;
+            var copy = new DataObject();
+            foreach (var format in RestoredFormats)
+                if (current.GetDataPresent(format, false) && current.GetData(format, false) is { } value) copy.SetData(format, value);
+            return copy.GetFormats().Length == 0 ? null : Private(copy);
+        }
+        catch (Exception ex) when (ex is ExternalException or OutOfMemoryException or InvalidOperationException) { return null; }
+    }
+    // Keeps transient clipboard content out of clipboard history, cloud clipboard, and clipboard monitors.
+    internal static DataObject Private(DataObject data)
+    {
+        data.SetData("ExcludeClipboardContentFromMonitorProcessing", new MemoryStream(new byte[4]));
+        data.SetData("CanIncludeInClipboardHistory", new MemoryStream(BitConverter.GetBytes(0)));
+        data.SetData("CanUploadToCloudClipboard", new MemoryStream(BitConverter.GetBytes(0)));
+        return data;
     }
     private static void Restore(IDataObject? previous, uint sequence)
     {

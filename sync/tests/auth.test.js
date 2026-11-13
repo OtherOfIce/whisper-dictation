@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fakeServer } from './fakeServer.js';
+import * as auth from '../convex/auth.js';
+import crons from '../convex/crons.js';
 import { TOKEN_PATTERN, generateToken, isEnvelope, mayCreate, normalizeEmail, sha256Hex, validateGrants } from '../convex/authCore.js';
 
 const authKey = letter => letter.repeat(43) + '=';
@@ -75,7 +77,7 @@ test('ALLOWED_EMAILS closes sign-up to the listed usernames', () => withEnv({ AL
   assert.equal((await create('me@x.co')).status, 200);
 }));
 
-test('an admin desktop pairs devices with a one-time code', async () => {
+test('a desktop pairs devices with a one-time code', async () => {
   const { call, create, pair } = setup();
   const admin = (await create()).body.token;
   const phone = await pair(admin, { secrets: true, settings: true, dictionary: 'Personal' });
@@ -85,11 +87,28 @@ test('an admin desktop pairs devices with a one-time code', async () => {
   assert.equal((await call('/pair/claim', { pairId: pairId('9') })).status, 404);
   assert.equal((await call('/pair/claim', { pairId: 'short' })).status, 400);
 
-  // A paired device cannot manage the account.
-  for (const path of ['/devices/list', '/devices/pair', '/account/passphrase']) assert.equal((await call(path, { name: 'x', grants: { secrets: true, settings: true }, pairId: pairId('2'), payload: envelope(), authKey: authKey('c'), keyring: envelope() }, phone.body.token)).status, 401, path);
   const listed = (await call('/devices/list', {}, admin)).body;
   assert.deepEqual(listed.devices.map(device => [device.name, device.admin, device.current]), [['Desk', true, true], ['Phone', false, false]]);
   assert.deepEqual(listed.lists, ['Personal']);
+});
+
+test('every linked device can list, pair and remove the others', async () => {
+  const { call, create, pair } = setup();
+  const desk = (await create()).body.token;
+  const phone = (await pair(desk, { secrets: true, settings: true, dictionary: 'Personal' })).body.token;
+  const me = (await call('/account/me', {}, phone)).body;
+  assert.deepEqual([me.admin, me.version], [false, 2], 'the server says peers may manage devices');
+  const listed = (await call('/devices/list', {}, phone)).body;
+  assert.deepEqual(listed.devices.map(device => [device.name, device.current]), [['Desk', false], ['Phone', true]]);
+  const laptop = await pair(phone, { secrets: true, settings: true, dictionary: 'Personal' }, 'Laptop', pairId('2'));
+  assert.equal(laptop.status, 200, 'a paired device can link another');
+  assert.equal(laptop.body.payload, envelope('P'));
+  const [deskEntry, phoneEntry] = (await call('/devices/list', {}, laptop.body.token)).body.devices;
+  assert.equal((await call('/devices/remove', { id: phoneEntry.id }, phone)).status, 400, 'not itself');
+  assert.equal((await call('/devices/update', { id: deskEntry.id, name: 'Old desk', grants: { secrets: true, settings: true, dictionary: 'Personal' } }, phone)).status, 200);
+  assert.equal((await call('/devices/remove', { id: deskEntry.id }, laptop.body.token)).status, 200);
+  assert.equal((await call('/account/me', {}, desk)).status, 401, 'the removed desktop is signed out');
+  assert.equal((await call('/sync/items', { items: [] }, phone)).body.version, 2);
 });
 
 test('pairing codes expire after 10 minutes', async () => {
@@ -127,7 +146,7 @@ test('a device only syncs what it was granted', async () => {
   assert.deepEqual((await call('/devices/list', {}, admin)).body.lists, ['Personal', 'Work']);
 });
 
-test('an admin can change, and remove, what a device gets', async () => {
+test('a device can change, and remove, what a device gets', async () => {
   const { call, create, pair } = setup();
   const admin = (await create()).body.token;
   const work = (await pair(admin, { secrets: false, settings: true, dictionary: 'Work' }, 'Work laptop')).body.token;
@@ -144,17 +163,45 @@ test('an admin can change, and remove, what a device gets', async () => {
   assert.equal((await call('/sync/items', { items: [] }, work)).status, 401, 'a removed device is signed out');
 });
 
-test('changing the passphrase keeps paired devices and signs out other admin desktops', async () => {
+test('changing the passphrase needs the current one and keeps every device signed in', async () => {
   const { call, create, pair } = setup();
   const desk = (await create()).body.token;
   const laptop = (await call('/account/sign-in', { username: 'me@x.co', authKey: authKey('a') })).body.token;
   const phone = (await pair(desk, { secrets: true, settings: true, dictionary: 'Personal' })).body.token;
-  assert.equal((await call('/account/passphrase', { authKey: authKey('n'), keyring: envelope('N') }, desk)).status, 200);
-  assert.equal((await call('/account/me', {}, laptop)).status, 401);
-  assert.equal((await call('/account/me', {}, phone)).status, 200);
-  assert.equal((await call('/account/me', {}, desk)).status, 200);
+  const change = (current, token = desk) => call('/account/passphrase', { currentAuthKey: current, authKey: authKey('n'), keyring: envelope('N') }, token);
+  assert.equal((await call('/account/passphrase', { authKey: authKey('n'), keyring: envelope('N') }, desk)).status, 400, 'the current key is required');
+  const wrong = await change(authKey('b'));
+  assert.equal(wrong.status, 403);
+  assert.equal(wrong.body.error, 'The current recovery key or passphrase is wrong.');
+  assert.equal((await call('/account/sign-in', { username: 'me@x.co', authKey: authKey('a') })).status, 200, 'nothing changed');
+  assert.equal((await change(authKey('a'), phone)).status, 200, 'any device that knows the current key can change it');
+  for (const token of [desk, laptop, phone]) assert.equal((await call('/account/me', {}, token)).status, 200);
   assert.equal((await call('/account/sign-in', { username: 'me@x.co', authKey: authKey('a') })).status, 401);
   assert.equal((await call('/account/sign-in', { username: 'me@x.co', authKey: authKey('n') })).body.keyring, envelope('N'));
+});
+
+test('wrong current passphrases count against the hourly limit', async () => {
+  const { call, create } = setup();
+  const desk = (await create()).body.token;
+  const change = current => call('/account/passphrase', { currentAuthKey: current, authKey: authKey('n'), keyring: envelope('N') }, desk);
+  for (let attempt = 0; attempt < 10; attempt++) assert.equal((await change(authKey('b'))).status, 403);
+  assert.equal((await change(authKey('a'))).status, 429, 'even the right one waits');
+  assert.equal((await call('/account/sign-in', { username: 'me@x.co', authKey: authKey('a') })).status, 429, 'shared with sign-in');
+});
+
+test('the hourly cleanup drops old sign-in failures and expired pairing codes', async () => {
+  const { call, create, server } = setup();
+  const desk = (await create()).body.token;
+  for (let attempt = 0; attempt < 3; attempt++) await call('/account/sign-in', { username: 'me@x.co', authKey: authKey('b') });
+  await call('/account/sign-in', { username: 'other@x.co', authKey: authKey('b') });
+  for (const id of ['3', '4']) await call('/devices/pair', { name: 'Late', grants: { secrets: false, settings: true, dictionary: null }, pairId: pairId(id), payload: envelope() }, desk);
+  const failures = [...server.tables.signInFailures.values()];
+  for (const row of failures.slice(0, 2)) row.at = Date.now() - 61 * 60 * 1000;
+  [...server.tables.pairings.values()][0].expiresAt = Date.now() - 1;
+  assert.deepEqual(await auth.cleanupExpired._handler(server.db, {}), { failures: 2, pairings: 1 });
+  assert.equal(server.tables.signInFailures.size, 2);
+  assert.deepEqual([...server.tables.pairings.values()].map(row => row.pairId), [pairId('4')]);
+  assert.equal(crons.export().includes('auth:cleanupExpired'), true, 'scheduled hourly');
 });
 
 test('signing out revokes only this device', async () => {

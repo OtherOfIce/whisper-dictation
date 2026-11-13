@@ -5,19 +5,23 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Each job asks only for what it needs: tests (and the npm install scripts they run) never hold a token that can
+# write releases.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: desktop-release
   cancel-in-progress: false
 
 jobs:
-  release:
+  test:
     if: github.repository == 'OtherOfIce/whisper-dictation'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -25,16 +29,21 @@ jobs:
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
-
       - name: Install desktop dependencies
         run: npm ci
         working-directory: desktop
       # Desktop integration tests run the real sync server on an in-memory database.
-      - name: Install sync test dependencies
+      - name: Install sync dependencies
         run: npm ci
+        working-directory: sync
+      - name: Test sync server
+        run: npm test
         working-directory: sync
       - name: Test desktop code
         run: npm test
+        working-directory: desktop
+      - name: Test desktop UI
+        run: npm run test:ui
         working-directory: desktop
       - name: Test native engine
         run: dotnet run --project tests/LocalWhisper.Tests -c Release
@@ -43,6 +52,28 @@ jobs:
       - name: Test engine protocol
         run: npm run test:engine
         working-directory: desktop
+
+  release:
+    needs: test
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install desktop dependencies
+        run: npm ci
+        working-directory: desktop
+      - name: Build native engine
+        run: dotnet publish src/LocalWhisper -c Release -r win-x64 --self-contained true -o dist/engine
 
       - name: Check that this commit is still main
         id: head

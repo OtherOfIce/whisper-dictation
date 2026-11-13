@@ -2,6 +2,7 @@ import { internalMutationGeneric as internalMutation } from 'convex/server';
 import { v } from 'convex/values';
 import { MAX_CLOCK_SKEW_MS, MAX_ITEMS, validateItem } from './itemsCore.js';
 import { allows, deviceFor } from './deviceCore.js';
+import { SERVER_VERSION } from './authCore.js';
 
 const itemShape = v.object({ name: v.string(), value: v.string(), deleted: v.boolean(), updatedAt: v.number() });
 const publicItem = ({ name, value, deleted, updatedAt }) => ({ name, value, deleted, updatedAt });
@@ -32,6 +33,6 @@ export const syncItems = internalMutation({
       }
     }
     const visible = [...stored.values()].filter(row => allows(device, row.name)).map(publicItem);
-    return { items: visible, rejected, serverTime: now, grants: device.grants, admin: device.admin };
+    return { items: visible, rejected, serverTime: now, grants: device.grants, admin: device.admin, version: SERVER_VERSION };
   }
 });

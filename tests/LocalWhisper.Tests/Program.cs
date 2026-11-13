@@ -26,6 +26,7 @@ internal static class Program
                 return;
             }
             DictationAudioChecks.RunAsync(Check).GetAwaiter().GetResult();
+            StabilityChecks.Run(Check);
             Gestures();
             ShortcutChecks.Run(Check);
             MicrophoneSelection();

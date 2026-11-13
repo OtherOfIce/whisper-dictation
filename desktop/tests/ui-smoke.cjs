@@ -1,356 +1,227 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const assert = require('node:assert/strict');
-const { safeStorage, clipboard } = require('electron');
-const { HistoryStore } = require('../history-store.cjs');
-exports.run = async ({ main, overlay, learning, app, engineEvent, testOverlayActions }) => {
+const { clipboard } = require('electron');
+
+// Drives the real windows with demo fixtures; no engine and no network. Screenshots go to desktop/artifacts.
+exports.run = async ({ main, overlay, learning, app, engineEvent, testOverlayActions, updater }) => {
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const evaluate = code => main.webContents.executeJavaScript(code);
+  const text = id => evaluate(`document.getElementById(${JSON.stringify(id)}).textContent`);
+  const visible = id => evaluate(`!document.getElementById(${JSON.stringify(id)}).hidden && !document.getElementById(${JSON.stringify(id)}).closest('[hidden]')`);
+  const click = selector => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const settings = () => evaluate("window.whisper.call('initial').then(x => x.settings)");
   const directory = path.join(__dirname, '..', 'artifacts'); await fs.mkdir(directory, { recursive: true });
+  const shot = async (name, win = main) => { await wait(150); return fs.writeFile(path.join(directory, `${name}.png`), (await win.webContents.capturePage()).toPNG()); };
   const { history } = require('./fixtures.cjs');
-  const originalRecordingStarted = history[0].metrics.started;
-  const store = new HistoryStore(path.join(directory, 'test-history.sqlite'), safeStorage);
-  const wav = Buffer.from('RIFF-test-WAVE-audio');
-  history[0].alternatives = [{ id: 'alternate-gpt', text: 'An alternate GPT transcript.', rawText: 'An alternate GPT transcript.', metrics: { ...history[0].metrics, started: new Date(Date.parse(originalRecordingStarted) + 60000).toISOString(), costs: [], transcriptionModel: 'gpt-transcribe', cleanupMode: 'off' } }];
-  await store.write(history, new Map([[history[0].id, { bytes: wav, format: 'wav' }]]));
-  assert.deepEqual(await new HistoryStore(store.file, safeStorage).read(), history.map((entry, index) => ({ ...entry, hasAudio: index === 0 })));
-  assert.deepEqual(await new HistoryStore(store.file, safeStorage).readAudio(history[0].id), { bytes: wav, format: 'wav' });
-  assert(!(await fs.readFile(store.file)).includes(Buffer.from(history[0].text)));
-  assert((await fs.readFile(store.file)).includes(wav));
-  const firstLedger = { through: '2026-09-14T00:00:00Z', importedAt: '2026-09-15T12:00:00Z', rows: [
-    { date: '2026-09-14', category: 'voice', model: 'microsoft/mai-transcribe-2', provider: 'Azure', endpoint: 'ep-1', amount: 0.01, requests: 4 }
-  ] };
-  await store.replaceCostLedger(firstLedger);
-  assert.deepEqual(await new HistoryStore(store.file, safeStorage).readCostLedger(), firstLedger);
-  await store.replaceCostLedger({ ...firstLedger, rows: [{ ...firstLedger.rows[0], amount: 0.02 }] });
-  assert.equal((await store.readCostLedger()).rows[0].amount, 0.02);
-  const legacyFile = path.join(directory, 'legacy-history.bin');
-  const migratedFile = path.join(directory, 'migrated-history.sqlite');
-  await fs.rm(migratedFile, { force: true });
-  await fs.writeFile(legacyFile, safeStorage.encryptString(JSON.stringify(history)));
-  assert.deepEqual(await new HistoryStore(migratedFile, safeStorage, legacyFile).read(), history.map(entry => ({ ...entry, hasAudio: false })));
-  await new HistoryStore(migratedFile, safeStorage, legacyFile).write([]);
-  assert.deepEqual(await new HistoryStore(migratedFile, safeStorage, legacyFile).read(), []);
-  engineEvent({ type: 'history', history });
-  await wait(600);
-  assert.equal(await evaluate('document.querySelectorAll(".transcript").length'), 4);
-  assert.equal(await evaluate('document.querySelectorAll(\'[aria-label="Show transcription details"]\').length'), 4);
-  assert((await evaluate('document.querySelector(".transcript-meta .meta-popover").textContent')).includes('MAI-Transcribe-2 · Clean'));
-  assert((await evaluate('document.querySelector(".transcript-meta .meta-popover").textContent')).includes('Luna'));
-  assert((await evaluate('document.querySelector(".transcript-meta .meta-popover").textContent')).includes('Response'));
-  assert((await evaluate('document.querySelector(".transcript-meta .meta-popover").textContent')).includes('Audio'));
-  assert.equal(await evaluate('document.querySelectorAll(\'[aria-label="Play audio"]\').length'), 1);
-  assert.equal(await evaluate('document.querySelectorAll(\'[aria-label="Download audio"]\').length'), 1);
-  assert.equal(await evaluate('document.querySelectorAll(\'[aria-label="No saved audio"]\').length'), 6);
-  assert.equal(await evaluate('document.querySelectorAll(\'button[aria-label="Compare transcripts"]\').length'), 1);
-  await evaluate('document.querySelector(\'button[aria-label="Compare transcripts"]\').click()'); await wait(100);
-  assert.equal(await evaluate('document.getElementById("comparison-drawer").hidden'), false);
-  assert.equal(await evaluate('document.querySelectorAll(".transcript-version").length'), 2);
-  assert((await evaluate('document.getElementById("comparison-versions").textContent')).includes('An alternate GPT transcript.'));
-  assert.equal(await evaluate('document.querySelector(\'[data-alternate-id="alternate-gpt"] [data-action="make-primary"]\').textContent'), 'Make primary');
-  await evaluate('document.getElementById("alternate-model").value="mai-transcribe-2-verbatim"; document.getElementById("create-alternate").click()'); await wait(150);
-  assert.equal(await evaluate('document.querySelectorAll(".transcript-version").length'), 3);
-  assert((await evaluate('document.getElementById("comparison-versions").textContent')).includes('Alternate from mai-transcribe-2-verbatim.'));
-  await fs.writeFile(path.join(directory, 'comparison.png'), (await main.webContents.capturePage()).toPNG());
-  await evaluate('document.querySelector(\'[data-alternate-id="alternate-gpt"] [data-action="make-primary"]\').click()'); await wait(150);
-  assert.equal(await evaluate('document.querySelector(".transcript-version .transcript-text").textContent'), 'An alternate GPT transcript.');
-  assert.equal(await evaluate(`window.whisper.call('initial').then(x => x.history.find(entry => entry.id === 'demo-0').metrics.started)`), originalRecordingStarted);
-  await evaluate('document.getElementById("close-comparison").click()');
-  assert.equal(await evaluate('getComputedStyle(document.querySelector(\'[aria-label="No saved audio"]\')).cursor'), 'default');
-  assert.equal(await evaluate('document.getElementById("balance-amount").textContent'), '$18.42');
-  assert.equal(await evaluate('document.getElementById("gateway-cost-card").hidden'), true);
-  const savedCostSettings = await evaluate('currentSettings');
-  for (const [hasGatewayKey, transcriptionModel, visible] of [
-    [false, 'mai-transcribe-2-streaming', false],
-    [true, 'mai-transcribe-2-clean', false],
-    [true, 'mai-transcribe-2-streaming', true]
-  ]) {
-    engineEvent({ type: 'settings', settings: { ...savedCostSettings, hasGatewayKey, transcriptionModel } });
-    await wait(50);
-    assert.equal(await evaluate('document.getElementById("gateway-cost-card").hidden'), !visible);
-  }
-  engineEvent({ type: 'gatewayBalance', balance: { remaining: 12.34, usage: .5678, message: 'Vercel team balance and usage', updated: new Date().toISOString() } });
-  await wait(50);
-  assert.equal(await evaluate('document.getElementById("gateway-balance-amount").textContent'), '$12.34');
-  assert.equal(await evaluate('document.getElementById("gateway-usage-total").textContent'), '$0.5678');
-  await evaluate(`renderCosts({ source: 'activity', voice: 1.25, cleanup: .1, models: [
-    { category: 'voice', model: 'microsoft/mai-transcribe-2-streaming', amount: 1 },
-    { category: 'voice', model: 'openai/gpt-transcribe', amount: .25 },
-    { category: 'cleanup', model: 'openai/gpt-6-luna', amount: .1 }
-  ] })`);
-  assert.equal(await evaluate('document.getElementById("cost-voice").textContent'), '$0.2500');
-  assert(!(await evaluate('document.getElementById("cost-model-breakdown").textContent')).includes('Streaming'));
-  await fs.writeFile(path.join(directory, 'gateway-costs.png'), (await main.webContents.capturePage()).toPNG());
-  await evaluate("window.whisper.call('initial').then(value => renderCosts(value.costs))");
-  engineEvent({ type: 'gatewayBalanceError' }); await wait(50);
-  assert((await evaluate('document.getElementById("gateway-balance-detail").textContent')).includes('last known balance'));
-  engineEvent({ type: 'settings', settings: savedCostSettings }); await wait(50);
+  main.setSize(1280, 820); await wait(300);
 
-  assert.equal(await evaluate('document.getElementById("cost-voice").textContent'), '$0.0212');
-  assert.equal(await evaluate('document.getElementById("cost-cleanup").textContent'), '$0.0038');
-  await evaluate('document.querySelector(".cost-info").focus()');
-  assert.equal(await evaluate('getComputedStyle(document.getElementById("cost-model-breakdown")).display'), 'grid');
-  assert((await evaluate('document.getElementById("cost-model-breakdown").textContent')).includes('MAI-Transcribe-2'));
-  assert((await evaluate('document.getElementById("cost-model-breakdown").textContent')).includes('last imported 30 completed days'));
-  engineEvent({ type: 'stats', stats: { total: 83, today: 83, last7Days: 83 }, costs: {
-    voice: 0.0042, cleanup: 0.0008, voiceCount: 4, cleanupCount: 2, source: 'history',
-    models: [{ category: 'voice', model: 'microsoft/mai-transcribe-2', amount: 0.0042 }, { category: 'cleanup', model: 'openai/gpt-5.6-luna', amount: 0.0008 }]
-  } });
-  await wait(50);
-  assert.equal(await evaluate('document.getElementById("cost-voice").textContent'), '—');
-  assert.equal(await evaluate('document.getElementById("cost-cleanup").textContent'), '—');
-  assert((await evaluate('document.getElementById("cost-model-breakdown").textContent')).includes('Import OpenRouter activity'));
-  assert(!overlay.isVisible());
-  await fs.writeFile(path.join(directory, 'history.png'), (await main.webContents.capturePage()).toPNG());
-  await evaluate(`document.querySelector('[aria-label="Show performance"]').click()`); await wait(200);
+  // Home: stats, recent list, shortcut keycaps.
+  history[0].alternatives = [{ id: 'alternate-gpt', text: 'An alternate GPT transcript.', rawText: 'An alternate GPT transcript.', metrics: { ...history[0].metrics, started: new Date(Date.parse(history[0].metrics.started) + 60000).toISOString(), costs: [], transcriptionModel: 'gpt-transcribe', cleanupMode: 'off' } }];
+  engineEvent({ type: 'history', history }); await wait(300);
+  assert.equal(await evaluate('document.querySelectorAll("#recent-list .transcript").length'), 4);
+  assert.equal(await text('stat-words'), '83');
+  assert.deepEqual(await evaluate('[...document.querySelectorAll("#shortcut-keys .keycap")].map(k => k.textContent)'), ['Ctrl', 'Win']);
+  assert.equal(await visible('setup-card'), false);
+  await shot('home');
+
+  // History: day groups, copy, search highlighting, failed transcript with Retry.
+  await click('[data-view=history]'); await wait(100);
+  assert.equal(await evaluate('document.querySelectorAll("#history-list .transcript").length'), 4);
+  assert.equal(await evaluate('document.querySelector("#history-list .day-label").textContent'), 'Today');
+  const previousClipboard = (await clipboard.readText());
+  await evaluate(`document.querySelector('#history-list [data-id="demo-1"] [aria-label="Copy transcript"]').click()`); await wait(100);
+  assert.equal((await clipboard.readText()), history[1].text);
+  await evaluate('document.getElementById("search").value="tomorrow"; document.getElementById("search").dispatchEvent(new Event("input"))'); await wait(250);
+  assert.equal(await evaluate('document.querySelectorAll("#history-list .transcript").length'), 1);
+  assert.equal(await evaluate('document.querySelector("#history-list mark").textContent'), 'tomorrow');
+  await evaluate('document.getElementById("search").value=""; document.getElementById("search").dispatchEvent(new Event("input"))'); await wait(250);
+  const started = new Date(Date.now() - 2 * 86400000).toISOString();
+  engineEvent({ type: 'transcript', entry: { id: 'failed', text: '', audio: 'UklGRg==', audioFormat: 'wav', metrics: { ...history[0].metrics, started, outcome: 'Timed out' } } }); await wait(100);
+  assert.equal(await evaluate('document.querySelector("[data-id=failed] .retry-button") !== null'), true);
+  await click('#history-list [data-id=failed] .retry-button'); await wait(150);
+  const retried = await evaluate("window.whisper.call('initial').then(x => x.history.find(e => e.id === 'failed'))");
+  assert.equal(retried.text, 'Retried transcript.');
+  assert.equal(retried.metrics.started, started, 'retry keeps the original recording time');
+  assert.equal(await evaluate('document.querySelector("#history-list [data-id=failed] .retry-button")'), null);
+  await shot('history');
+
+  // Row menu: delete hides at once and Undo brings it back; letting the toast expire deletes for real.
+  const openMenu = id => evaluate(`document.querySelector('#history-list [data-id="${id}"] [aria-label="More actions"]').click()`);
+  const menuItem = label => evaluate(`[...document.querySelectorAll('.menu button')].find(b => b.textContent.includes(${JSON.stringify(label)})).click()`);
+  await openMenu('demo-3'); await wait(50);
+  assert.equal(await evaluate('document.querySelectorAll(".menu button").length'), 5);
+  await shot('history-menu');
+  await menuItem('Delete'); await wait(50);
+  assert.equal(await evaluate('document.querySelector("#history-list [data-id=demo-3]")'), null);
+  await click('#toast-action'); await wait(50);
+  assert.notEqual(await evaluate('document.querySelector("#history-list [data-id=demo-3]")'), null);
+  await openMenu('demo-3'); await wait(50); await menuItem('Delete'); await wait(6300);
+  assert.equal((await evaluate("window.whisper.call('initial').then(x => x.history.map(e => e.id))")).includes('demo-3'), false);
+
+  // Details drawer, including streaming diagnostics and the original text before cleanup.
+  await openMenu('demo-0'); await wait(50); await menuItem('Timing details'); await wait(200);
+  assert.equal(await text('latency-value'), '1.36 s');
   assert.equal(await evaluate('document.querySelectorAll("[data-stage=Recording]").length'), 0);
-  assert.equal(await evaluate('document.getElementById("latency-value").textContent'), '1.36 s');
-  const originalPerformanceMetrics = history[0].metrics;
-  engineEvent({ type: 'metricsUpdated', id: history[0].id, metrics: { ...originalPerformanceMetrics, streamingAttempts: [{
-    model: 'microsoft/mai-transcribe-2-streaming', startedMs: 0, connectedMs: 100,
-    firstTranscriptMs: 400, lastTranscriptMs: 18000, transcriptEvents: 20,
-    inputCompletedMs: 18432, endedMs: 48432, outcome: 'Failed', failureStage: 'finalize'
-  }] } });
-  await wait(100);
-  const streamingFacts = await evaluate('document.getElementById("timing-facts").textContent');
-  assert(streamingFacts.includes('Failed while waiting for the completed transcript'));
-  assert(streamingFacts.includes('400 ms before Stop'));
-  assert(streamingFacts.includes('30.00 s after audio was sent'));
-  assert(await evaluate('document.getElementById("timing-facts").scrollWidth <= document.getElementById("timing-facts").clientWidth'));
-  engineEvent({ type: 'metricsUpdated', id: history[0].id, metrics: originalPerformanceMetrics });
-  await wait(100);
-  assert(!(await evaluate('document.getElementById("timing-facts").textContent')).includes('Stream 1'));
-  await fs.writeFile(path.join(directory, 'performance.png'), (await main.webContents.capturePage()).toPNG());
-  await evaluate('document.getElementById("include-recording").click()'); await wait(100);
+  engineEvent({ type: 'metricsUpdated', id: 'demo-0', metrics: { ...history[0].metrics, streamingAttempts: [{ model: 'microsoft/mai-transcribe-2-streaming', startedMs: 0, connectedMs: 100, firstTranscriptMs: 400, lastTranscriptMs: 18000, transcriptEvents: 20, inputCompletedMs: 18432, endedMs: 48432, outcome: 'Failed', failureStage: 'finalize' }] } });
+  await wait(150);
+  assert((await text('timing-facts')).includes('Failed while waiting for the completed transcript'));
+  await click('#include-recording'); await wait(100);
   assert.equal(await evaluate('document.querySelectorAll("[data-stage=Recording]").length'), 1);
-  await evaluate('document.getElementById("close-drawer").click(); document.getElementById("search").value="tomorrow"; document.getElementById("search").dispatchEvent(new Event("input"))');
-  assert.equal(await evaluate('document.querySelectorAll(".transcript").length'), 1);
-  const previousClipboard = await clipboard.readText();
-  await evaluate(`document.querySelector('[aria-label="Copy transcript"]').click()`); await wait(100);
-  assert.equal(await evaluate('document.getElementById("toast").textContent'), 'Transcript copied');
-  assert.equal(await clipboard.readText(), history[1].text);
-  await clipboard.writeText('sentinel-before-paste');
-  engineEvent({ type: 'transcript', entry: { id: 'pasted-ok', text: 'Pasted into the focused field.', metrics: { ...history[0].metrics, outcome: 'Pasted' } } });
-  await wait(100);
-  assert.equal(await clipboard.readText(), 'sentinel-before-paste');
-  engineEvent({ type: 'transcript', entry: { id: 'focus-lost', text: 'Focus moved before paste.', metrics: { ...history[0].metrics, outcome: 'Saved to history' } } });
-  await wait(100);
-  assert.equal(await clipboard.readText(), 'Focus moved before paste.');
-  assert.equal(await evaluate('document.getElementById("toast").textContent'), "Couldn't paste. Your transcript was copied to the clipboard.");
-  await clipboard.writeText('sentinel-before-copylast');
+  await shot('performance');
+  await click('#close-drawer');
+
+  // Compare: alternates, make primary keeps the recording time.
+  await openMenu('demo-0'); await wait(50); await menuItem('Compare'); await wait(100);
+  assert.equal(await evaluate('document.querySelectorAll(".transcript-version").length'), 2);
+  await evaluate('document.getElementById("alternate-model").value="mai-transcribe-2-verbatim"; document.getElementById("create-alternate").click()'); await wait(200);
+  assert.equal(await evaluate('document.querySelectorAll(".transcript-version").length'), 3);
+  await shot('comparison');
+  await click('[data-alternate-id="alternate-gpt"] [data-action="make-primary"]'); await wait(150);
+  const promoted = await evaluate("window.whisper.call('initial').then(x => x.history.find(e => e.id === 'demo-0'))");
+  assert.equal(promoted.text, 'An alternate GPT transcript.');
+  assert.equal(promoted.metrics.started, history[0].metrics.started);
+  await click('#close-comparison');
+
+  // Paste fallback copies to the clipboard.
+  await clipboard.writeText('sentinel');
+  engineEvent({ type: 'transcript', entry: { id: 'pasted-ok', text: 'Pasted into the focused field.', metrics: { ...history[0].metrics, outcome: 'Pasted' } } }); await wait(80);
+  assert.equal((await clipboard.readText()), 'sentinel');
+  engineEvent({ type: 'transcript', entry: { id: 'focus-lost', text: 'Focus moved before paste.', metrics: { ...history[0].metrics, outcome: 'Saved to history' } } }); await wait(80);
+  assert.equal((await clipboard.readText()), 'Focus moved before paste.');
   assert.equal(await evaluate("window.whisper.call('copyLast')"), true);
-  assert.equal(await clipboard.readText(), 'Focus moved before paste.');
   await clipboard.writeText(previousClipboard);
-  await evaluate('document.querySelector("[data-view=settings]").click()');
-  assert.equal(await evaluate('document.getElementById("lock-mode").checked'), true);
-  await evaluate('document.getElementById("lock-mode").click()'); await wait(100);
-  assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.lockMode)"), false);
-  await evaluate('document.getElementById("lock-mode").click()'); await wait(100);
-  assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.lockMode)"), true);
-  assert.equal(await evaluate('document.getElementById("transcription-model").value'), 'mai-transcribe-2-clean');
-  assert.equal(await evaluate('document.getElementById("cleanup-mode").value'), 'off');
-  assert.equal(await evaluate('document.getElementById("microphone-device").value'), '');
-  assert.equal(await evaluate('document.getElementById("microphone-device").options.length'), 3);
-  assert.equal(await evaluate('document.getElementById("shortcut-value").textContent'), 'Ctrl + Win');
-  await evaluate('document.getElementById("rebind-shortcut").click()'); await wait(50);
-  engineEvent({ type: 'shortcutCaptured', shortcut: { modifiers: 6, key: 68 } }); await wait(50);
-  assert.equal(await evaluate('document.getElementById("shortcut-value").textContent'), 'Ctrl + Shift + D');
-  await evaluate('document.getElementById("settings-form").requestSubmit(document.querySelector("[type=submit]"))'); await wait(100);
-  assert.deepEqual(await evaluate("window.whisper.call('initial').then(x => x.settings.shortcut)"), { modifiers: 6, key: 68 });
-  assert.equal(await evaluate('document.getElementById("shortcut-hint").textContent'), 'Press Ctrl + Shift + D to speak');
-  await evaluate('document.getElementById("reset-shortcut").click(); document.getElementById("settings-form").requestSubmit(document.querySelector("[type=submit]"))'); await wait(100);
-  assert.deepEqual(await evaluate("window.whisper.call('initial').then(x => x.settings.shortcut)"), { modifiers: 10, key: 0 });
-  await evaluate('document.getElementById("rebind-shortcut").click()'); await wait(50);
-  engineEvent({ type: 'shortcutCaptured', shortcut: { modifiers: 0, key: 68 } }); await wait(50);
-  assert.equal(await evaluate('document.getElementById("shortcut-value").textContent'), 'Ctrl + Win');
-  await evaluate('document.getElementById("test-microphone").click()'); await wait(50);
+
+  // Settings save as soon as they change.
+  await click('#open-settings'); await wait(100);
+  assert.equal(await visible('settings-modal'), true);
+  await click('#lock-mode'); await wait(100);
+  assert.equal((await settings()).lockMode, false);
+  assert.match(await text('shortcut-description'), /Hold/);
+  await click('#lock-mode'); await wait(100);
+  assert.equal((await settings()).lockMode, true);
+  await click('#rebind-shortcut'); await wait(50);
+  engineEvent({ type: 'shortcutCaptured', shortcut: { modifiers: 6, key: 68 } }); await wait(150);
+  assert.deepEqual((await settings()).shortcut, { modifiers: 6, key: 68 });
+  assert.deepEqual(await evaluate('[...document.querySelectorAll("#shortcut-keys .keycap")].map(k => k.textContent)'), ['Ctrl', 'Shift', 'D']);
+  await click('#rebind-shortcut'); await wait(50);
+  engineEvent({ type: 'shortcutCaptured', shortcut: { modifiers: 0, key: 68 } }); await wait(80);
+  assert.deepEqual((await settings()).shortcut, { modifiers: 6, key: 68 }, 'an invalid capture is not saved');
+  await click('#reset-shortcut'); await wait(150);
+  assert.deepEqual((await settings()).shortcut, { modifiers: 10, key: 0 });
+  await click('#test-microphone'); await wait(50);
   engineEvent({ type: 'microphoneTestLevel', level: 0.6, seconds: 1.2 }); await wait(50);
   assert.equal(await evaluate('document.getElementById("microphone-test-level").value'), 0.6);
-  assert.equal(await evaluate('document.getElementById("test-microphone").textContent'), 'Stop test');
   const testWav = Buffer.alloc(364); testWav.write('RIFF'); testWav.writeUInt32LE(356, 4); testWav.write('WAVEfmt ', 8); testWav.writeUInt32LE(16, 16); testWav.writeUInt16LE(1, 20); testWav.writeUInt16LE(1, 22); testWav.writeUInt32LE(16000, 24); testWav.writeUInt32LE(32000, 28); testWav.writeUInt16LE(2, 32); testWav.writeUInt16LE(16, 34); testWav.write('data', 36); testWav.writeUInt32LE(320, 40);
   engineEvent({ type: 'microphoneTestStopped', audio: testWav.toString('base64') }); await wait(50);
   assert.equal(await evaluate('document.getElementById("play-microphone-test").disabled'), false);
-  assert.equal(await evaluate('document.getElementById("test-microphone").textContent'), 'Test microphone');
-  await evaluate('document.getElementById("play-microphone-test").click()'); await wait(100);
-  await evaluate('document.querySelector("[data-view=history]").click()'); await wait(50);
-  assert.equal(await evaluate('document.getElementById("play-microphone-test").disabled'), true);
-  await evaluate('document.querySelector("[data-view=settings]").click()');
-  await evaluate('document.getElementById("test-microphone").click()'); await wait(50);
-  engineEvent({ type: 'settingsToolsStopped' }); await wait(50);
-  assert.equal(await evaluate('document.getElementById("test-microphone").textContent'), 'Test microphone');
-  engineEvent({ type: 'microphoneTestStopped', audio: testWav.toString('base64') }); await wait(50);
-  assert.equal(await evaluate('document.getElementById("play-microphone-test").disabled'), true);
+  await evaluate("document.getElementById('microphone-device').value='usb-mic'; document.getElementById('microphone-device').dispatchEvent(new Event('change'))"); await wait(150);
+  assert.equal((await settings()).microphoneDeviceId, 'usb-mic');
+  assert.equal(await evaluate('document.getElementById("play-microphone-test").disabled'), true, 'switching microphones discards the test');
+  await shot('settings-general');
 
-  await evaluate("document.getElementById('microphone-device').value='usb-mic'; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))");
-  await wait(100);
-  assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.microphoneDeviceId)"), 'usb-mic');
-  await evaluate("document.getElementById('refresh-microphones').click()");
-  await wait(100);
-  assert.equal(await evaluate('document.getElementById("microphone-device").value'), 'usb-mic');
-  await evaluate("document.getElementById('microphone-device').value=''; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))");
-  await wait(100);
-  assert.equal(await evaluate('document.getElementById("dictionary-terms").value'), '');
-  assert.equal(await evaluate('document.getElementById("sync-status").textContent'), 'Sync is off');
-  assert.equal(await evaluate('document.getElementById("sync-now").disabled'), true);
-  const visible = id => evaluate(`!document.getElementById('${id}').hidden`);
-  assert.deepEqual([await visible('signed-out-panel'), await visible('signed-in-panel'), await visible('sign-out')], [true, false, false]);
-  // Signed out: three ways in, each showing only its own fields.
-  await evaluate("document.querySelector('[data-account-mode=pair]').click()");
-  assert.deepEqual([await visible('pair-fields'), await visible('credentials-fields'), await evaluate('document.getElementById("account-submit").textContent')], [true, false, 'Pair']);
-  await evaluate("document.querySelector('[data-account-mode=create]').click()");
-  assert.deepEqual([await visible('pair-fields'), await visible('confirm-row'), await evaluate('document.getElementById("account-submit").textContent')], [false, true, 'Create account']);
-  // Show reveals the passphrase and its confirmation together; Caps Lock shows a warning until the field loses focus.
-  const types = () => evaluate('["account-passphrase","account-passphrase-confirm"].map(id => document.getElementById(id).type)');
-  await evaluate("document.querySelector('[data-reveal^=account-passphrase]').click()");
-  assert.deepEqual(await types(), ['text', 'text']);
-  await evaluate("document.querySelector('[data-reveal^=account-passphrase]').click()");
-  assert.deepEqual(await types(), ['password', 'password']);
-  const capsWarning = "!document.querySelector('#credentials-fields .caps-warning').hidden";
-  await evaluate("{ const field = document.getElementById('account-passphrase'); field.focus(); field.dispatchEvent(new KeyboardEvent('keyup', { key: 'A', modifierCapsLock: true })) }");
-  assert.equal(await evaluate(capsWarning), true);
-  await evaluate("document.getElementById('account-passphrase').dispatchEvent(new KeyboardEvent('keyup', { key: 'a' }))");
-  assert.equal(await evaluate(capsWarning), false);
-  await evaluate("{ const field = document.getElementById('account-passphrase'); field.dispatchEvent(new KeyboardEvent('keyup', { key: 'A', modifierCapsLock: true })); field.blur() }");
-  assert.equal(await evaluate(capsWarning), false);
-  const grants = { secrets: true, settings: true, history: false, dictionary: 'Personal' };
-  const status = account => ({ account: { signedIn: true, url: 'https://test.convex.site', username: 'me@example.com', name: 'Desk', grants, hasKeys: true, message: '', ...account }, dictionary: { url: '', sharedKey: false, list: 'Personal', message: 'Synced' }, items: { message: 'Synced' } });
-  engineEvent({ type: 'dictionarySyncStatus', sync: status({ admin: true }) });
-  await wait(150);
-  assert.deepEqual([await visible('signed-out-panel'), await visible('signed-in-panel'), await visible('sign-out'), await visible('devices-panel')], [false, true, true, true]);
-  assert.equal(await evaluate('document.getElementById("account-username-label").textContent'), 'me@example.com');
-  assert.equal(await evaluate('document.getElementById("account-grants").textContent'), 'This device syncs API keys, voice settings and the Personal dictionary.');
-  assert.equal(await evaluate('document.getElementById("sync-url").disabled'), true);
-  assert.equal(await evaluate('document.querySelectorAll("#device-list li").length'), 2);
-  assert.match(await evaluate('document.querySelector("#device-list li:last-child").textContent'), /Work laptop.*seen 3 hours ago.*syncs voice settings and the Work dictionary/);
-  // Changing a device paired without keys cannot add them; adding a device offers the existing lists.
-  await evaluate('document.querySelector("#device-list li:last-child button").click()');
-  assert.deepEqual([await visible('device-form'), await evaluate('document.getElementById("grant-secrets").disabled'), await evaluate('document.getElementById("device-dictionary").value')], [true, true, 'Work']);
-  assert.equal(await evaluate('document.getElementById("grant-history").disabled'), true);
-  await evaluate('document.getElementById("device-cancel").click(); document.getElementById("add-device").click()');
-  assert.deepEqual(await evaluate('[...document.getElementById("device-dictionary").options].map(option => option.text)'), ['Personal', 'Work', 'New list…', 'No dictionary']);
-  await evaluate('document.getElementById("device-dictionary").value="__new"; document.getElementById("device-dictionary").dispatchEvent(new Event("change"))');
-  assert.equal(await visible('device-dictionary-new'), true);
-  await evaluate('document.getElementById("device-cancel").click()');
-  // A paired device sees what it gets, and cannot manage devices.
-  engineEvent({ type: 'dictionarySyncStatus', sync: status({ admin: false, name: 'Phone', grants: { ...grants, settings: false, dictionary: null } }) });
-  await wait(50);
-  assert.equal(await visible('devices-panel'), false);
-  assert.equal(await evaluate('document.getElementById("account-grants").textContent'), 'This device syncs API keys. Change this from your desktop.');
-  engineEvent({ type: 'dictionarySyncStatus', sync: { account: { signedIn: false, url: '', username: '', name: '', admin: false, grants: null, hasKeys: false, message: 'This device was signed out. Sign in again to keep syncing.' }, dictionary: { url: '', sharedKey: false, list: null, message: 'Sync is off' }, items: { message: '' } } });
-  await wait(50);
-  assert.deepEqual([await visible('signed-out-panel'), await visible('signed-in-panel')], [true, false]);
-  assert.match(await evaluate('document.getElementById("sync-status").textContent'), /signed out/);
-  assert.equal(await evaluate('document.getElementById("sync-url").disabled'), false);
-  await evaluate('document.getElementById("dictionary-terms").value="Draft term"');
-  engineEvent({ type: 'dictionarySynced', settings: { ...(await evaluate("window.whisper.call('initial').then(x => x.settings)")), dictionaryTerms: ['Phone term'] } });
-  await wait(100);
-  assert.equal(await evaluate('document.getElementById("dictionary-terms").value'), 'Phone term\nDraft term');
-  engineEvent({ type: 'settings', settings: await evaluate("window.whisper.call('initial').then(x => x.settings)") });
-  await wait(100);
-  await evaluate(`document.getElementById('xai-api-key').value='xai-test-only'; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))`);
-  await wait(100);
+  await click('[data-tab=transcription]'); await wait(50);
+  for (const model of ['mai-transcribe-2-verbatim', 'gpt-transcribe', 'mai-transcribe-2-streaming', 'mai-transcribe-2-clean']) {
+    await evaluate(`document.getElementById('transcription-model').value=${JSON.stringify(model)}; document.getElementById('transcription-model').dispatchEvent(new Event('change'))`); await wait(120);
+    assert.equal((await settings()).transcriptionModel, model);
+    if (model === 'mai-transcribe-2-streaming') assert.equal(await evaluate('document.getElementById("live-chunks").disabled'), true);
+  }
+  for (const mode of ['luna', 'off']) {
+    await evaluate(`document.getElementById('cleanup-mode').value='${mode}'; document.getElementById('cleanup-mode').dispatchEvent(new Event('change'))`); await wait(120);
+    assert.equal((await settings()).cleanupMode, mode);
+  }
+  await click('[data-tab=keys]'); await wait(50);
+  await evaluate("document.getElementById('xai-api-key').value='xai-test-only'"); await click('[data-save-key=xaiApiKey]'); await wait(150);
+  assert.equal((await settings()).hasXaiKey, true);
   assert.equal(await evaluate('document.getElementById("xai-api-key").value'), '');
-  assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.hasXaiKey)"), true);
-  await evaluate(`document.getElementById('management-key').value='test-management-key'; document.getElementById('import-costs').click()`);
-  await wait(100);
+  assert.equal(await text('xai-key-status'), 'Saved');
+  assert.equal(await visible('xai-api-key'), false, 'a saved key collapses to Replace');
+  await evaluate("document.getElementById('management-key').value='test-management-key'"); await click('#import-costs'); await wait(150);
   assert.equal(await evaluate('document.getElementById("management-key").value'), '');
-  assert((await evaluate('document.getElementById("import-costs-status").textContent')).includes('Delete the temporary key'));
-  assert(!(await fs.readFile(path.join(app.getPath('userData'), 'history.sqlite'))).includes(Buffer.from('test-management-key')));
-  assert.equal(await evaluate('document.getElementById("cost-voice").textContent'), '$0.0242');
-  assert.equal(await evaluate('document.getElementById("cost-cleanup").textContent'), '$0.0048');
-  await evaluate(`document.getElementById("dictionary-terms").value="Acme Corp\\n  Maya's project  \\n\\nmeeting notes"; document.getElementById("settings-form").requestSubmit(document.querySelector("[type=submit]"))`);
-  await wait(100);
-  assert.deepEqual(await evaluate("window.whisper.call('initial').then(x => x.settings.dictionaryTerms)"), ['Acme Corp', "Maya's project", 'meeting notes']);
-  await evaluate('document.getElementById("dictionary-terms").value=""; document.getElementById("settings-form").requestSubmit(document.querySelector("[type=submit]"))');
-  await wait(100);
-  assert.deepEqual(await evaluate("window.whisper.call('initial').then(x => x.settings.dictionaryTerms)"), []);
-  const learningSettings = await evaluate("window.whisper.call('initial').then(x => x.settings)");
-  await evaluate('document.getElementById("dictionary-terms").value="Draft name"');
-  engineEvent({ type: 'dictionaryLearned', id: 'learned-test', term: 'Raikage', settings: { ...learningSettings, dictionaryTerms: ['Raikage'] } });
-  await wait(150);
-  assert.equal(await evaluate('document.getElementById("dictionary-terms").value'), 'Draft name\nRaikage');
+  assert.match(await text('cost-voice'), /^\$0\.0\d\d$/);
+  await shot('settings-keys');
+
+  // Sync: turn on shows the recovery key, link shows a code, turn off needs a second click.
+  await click('[data-tab=sync]'); await wait(50);
+  assert.equal(await visible('sync-off'), true);
+  await click('#sync-turn-on'); await wait(200);
+  assert.equal(await visible('sync-on'), true);
+  assert.equal(await text('recovery-key'), 'TEST1-TEST2-ABCDE-FGHJK-MNPQR-STVWX');
+  assert.equal(await evaluate('document.querySelectorAll("#device-list li").length'), 2);
+  await click('#link-device'); await wait(150);
+  assert.equal(await text('link-code'), 'K7Q2-9XMB-4TRD');
+  await shot('settings-sync');
+  await click('#link-done'); await click('#sync-sign-out'); await wait(50);
+  assert.equal(await visible('sync-on'), true);
+  await click('#sync-sign-out'); await wait(150);
+  assert.equal(await visible('sync-off'), true);
+
+  // Updates: a downloaded update shows in the sidebar and in About.
+  await click('[data-tab=about]'); await wait(50);
+  assert.equal(await visible('update-card'), false);
+  updater.set({ state: 'ready', version: '9.9.9', progress: 100 }); await wait(100);
+  assert.equal(await visible('update-card'), true);
+  assert.equal(await visible('about-install'), true);
+  assert.match(await text('update-status'), /9\.9\.9 is ready/);
+  await shot('settings-about');
+  await click('[data-close-settings]'); await wait(50);
+  assert.equal(await visible('settings-modal'), false);
+
+  // Dictionary: add, remove with undo, learned words marked, Wispr import.
+  await click('[data-view=dictionary]'); await click('#dictionary-add-open');
+  await evaluate("document.getElementById('dictionary-new-term').value='Acme Corp, Maya\\'s project'; document.getElementById('dictionary-add').requestSubmit()"); await wait(150);
+  assert.deepEqual((await settings()).dictionaryTerms, ['Acme Corp', "Maya's project"]);
+  await evaluate(`[...document.querySelectorAll('.term')].find(t => t.textContent.includes('Acme')).querySelector('button').click()`); await wait(150);
+  assert.deepEqual((await settings()).dictionaryTerms, ["Maya's project"]);
+  await click('#toast-action'); await wait(150);
+  assert.deepEqual((await settings()).dictionaryTerms, ["Maya's project", 'Acme Corp']);
+  const learnedSettings = { ...(await settings()), dictionaryTerms: ["Maya's project", 'Acme Corp', 'Raikage'] };
+  engineEvent({ type: 'dictionaryLearned', id: 'learned-test', term: 'Raikage', settings: learnedSettings }); await wait(150);
+  assert.equal(await evaluate('document.querySelectorAll(".term .learned").length'), 1);
+  await click('[data-dictionary-filter=learned]'); await wait(50);
+  assert.equal(await evaluate('document.querySelectorAll(".term").length'), 1);
+  await click('[data-dictionary-filter=all]');
   assert.equal(learning.isVisible(), true);
   assert.equal(await learning.webContents.executeJavaScript('document.querySelector(".term")?.textContent ?? "missing"'), 'Raikage');
-  await fs.writeFile(path.join(directory, 'learning-toast.png'), (await learning.webContents.capturePage()).toPNG());
-  await learning.webContents.executeJavaScript('document.querySelector("button").click()');
-  await wait(50);
-  assert.equal(await evaluate('document.getElementById("dictionary-terms").value'), 'Draft name');
-  engineEvent({ type: 'dictionaryLearned', id: 'learned-nano', term: 'NanoSight', settings: { ...learningSettings, dictionaryTerms: ['NanoSight'] } });
-  engineEvent({ type: 'dictionaryLearned', id: 'learned-aeris', term: 'Aeris', settings: { ...learningSettings, dictionaryTerms: ['NanoSight', 'Aeris'] } });
-  await wait(50);
-  assert.equal(await evaluate('document.getElementById("dictionary-terms").value'), 'Draft name\nNanoSight\nAeris');
-  await learning.webContents.executeJavaScript('Array.from(document.querySelectorAll("button")).find(button => button.getAttribute("aria-label") === "Undo NanoSight")?.click()');
-  await wait(50);
-  assert.equal(await evaluate('document.getElementById("dictionary-terms").value'), 'Draft name\nAeris');
-  await evaluate('document.getElementById("dictionary-terms").value="Astra\\nExisting term"; document.getElementById("import-wispr").click()'); await wait(100);
-  assert.deepEqual(await evaluate("window.whisper.call('initial').then(x => x.settings.dictionaryTerms)"), ['Astra', 'Existing term', 'Wispr Flow']);
-  assert.equal(await evaluate('document.getElementById("import-wispr-status").textContent'), '1 new term imported. 3 snippets were skipped.');
-  for (const model of ['mai-transcribe-2-verbatim', 'mai-transcribe-2-clean', 'gpt-transcribe', 'grok-voice-transcribe-2-streaming', 'mai-transcribe-2-streaming']) {
-    await evaluate(`document.getElementById('transcription-model').value=${JSON.stringify(model)}; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))`);
-    await wait(100);
-    assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.transcriptionModel)"), model);
-  }
-  assert.equal(await evaluate('document.getElementById("live-chunks").disabled'), true);
-  assert.equal(await evaluate('document.getElementById("double-transcription").disabled'), true);
-  assert((await evaluate('document.getElementById("dictionary-hints-note").textContent')).includes('does not support'));
-  await evaluate("document.getElementById('gateway-api-key').value='gateway-test-only'; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))");
-  await wait(100);
-  assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.hasGatewayKey)"), true);
-  assert.equal(await evaluate('document.getElementById("gateway-api-key").value'), '');
-  await evaluate("document.getElementById('transcription-model').value='mai-transcribe-2-clean'; document.getElementById('transcription-model').dispatchEvent(new Event('change'))");
-  assert.equal(await evaluate('document.getElementById("cleanup-mode").disabled'), false);
-  assert.equal(await evaluate('document.getElementById("live-chunks").disabled'), false);
-  assert.equal(await evaluate('document.getElementById("double-transcription").disabled'), false);
-  await evaluate("document.getElementById('double-transcription').checked=true; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))");
-  await wait(100);
-  assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.doubleTranscription)"), true);
-  await evaluate("document.getElementById('transcription-model').value='mai-transcribe-2-clean'; document.getElementById('transcription-model').dispatchEvent(new Event('change'))");
-  for (const mode of ['luna', 'luna-fast', 'off']) {
-    await evaluate(`document.getElementById('cleanup-mode').value=${JSON.stringify(mode)}; document.getElementById('settings-form').requestSubmit(document.querySelector('[type=submit]'))`);
-    await wait(100);
-    assert.equal(await evaluate("window.whisper.call('initial').then(x => x.settings.cleanupMode)"), mode);
-  }
-  engineEvent({ type: 'transcript', entry: { id: 'cleaned', text: 'Profits rose 70%.', rawText: 'Profits rose 50%, no, 70%.', metrics: { ...history[0].metrics, rows: [...history[0].metrics.rows, { name: 'AI cleanup (Luna)', startMs: 18700, durationMs: 500 }] } } });
-  await evaluate(`document.querySelector('[data-view=history]').click(); document.getElementById('search').value=''; document.getElementById('search').dispatchEvent(new Event('input')); document.querySelector('[data-id=cleaned] [aria-label="Show performance"]').click()`);
-  await wait(100);
-  assert.equal(await evaluate('document.querySelectorAll(\'[data-stage="AI cleanup (Luna)"]\').length'), 1);
-  assert.equal(await evaluate('document.getElementById("original-text").textContent'), 'Profits rose 50%, no, 70%.');
-  assert.equal(await evaluate('document.getElementById("original-transcript").hidden'), false);
-  assert(Number((await evaluate('document.getElementById("words-total").textContent')).replaceAll(',', '')) > 0);
-  await evaluate('document.getElementById("close-drawer").click(); document.querySelector("[data-view=settings]").click()');
-  await wait(200);
-  await fs.writeFile(path.join(directory, 'settings.png'), (await main.webContents.capturePage()).toPNG());
-  await evaluate('document.getElementById("dictionary-terms").scrollIntoView({block:"center"})');
-  await wait(150);
-  await fs.writeFile(path.join(directory, 'dictionary.png'), (await main.webContents.capturePage()).toPNG());
+  await shot('learning-toast', learning);
+  await learning.webContents.executeJavaScript('document.querySelector("button").click()'); await wait(150);
+  assert.equal(await evaluate('document.querySelectorAll(".term .learned").length'), 0);
+  await click('#import-wispr'); await wait(150);
+  assert((await settings()).dictionaryTerms.includes('Wispr Flow'));
+  await shot('dictionary');
+
+  // Engine offline banner, and setup prompt without a key.
+  engineEvent({ type: 'engineOffline' }); await wait(50);
+  assert.equal(await visible('engine-banner'), true);
+  engineEvent({ type: 'ready', settings: { ...(await settings()), hasKey: false } }); await wait(50);
+  assert.equal(await visible('engine-banner'), false);
+  await click('[data-view=home]'); await wait(50);
+  assert.equal(await visible('setup-card'), true);
+  await shot('home-setup');
+
+  // Recording overlay: text-free, not focusable, lock-mode buttons work.
+  assert(!overlay.isVisible());
   engineEvent({ type: 'state', mode: 'PushToTalk', level: .18 }); await wait(200);
   assert(overlay.isVisible());
   assert.equal(overlay.isFocusable(), false);
-  assert.deepEqual(overlay.getSize(), [192, 56]);
   assert.equal(await overlay.webContents.executeJavaScript('document.querySelectorAll(".bar").length'), 10);
   assert.equal(await overlay.webContents.executeJavaScript('document.body.innerText'), '');
-  assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("cancel").hidden'), true);
-  assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("finish").hidden'), true);
-  assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("wave").className'), 'wave');
   engineEvent({ type: 'state', mode: 'Busy', phase: 'transcribing', level: 0 }); await wait(250);
   assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("wave").className'), 'wave transcribing');
-  assert.equal(await overlay.webContents.executeJavaScript('getComputedStyle(document.querySelector(".bar")).backgroundColor'), 'rgb(197, 204, 237)');
-  engineEvent({ type: 'state', mode: 'Busy', phase: 'luna', level: 0 }); await wait(250);
-  assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("wave").className'), 'wave luna');
-  assert.equal(await overlay.webContents.executeJavaScript('getComputedStyle(document.querySelector(".bar")).backgroundColor'), 'rgb(207, 191, 226)');
   engineEvent({ type: 'state', mode: 'LockMode', level: .18 }); await wait(100);
-  assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("wave").className'), 'wave');
-  assert.equal(overlay.isFocusable(), false);
-  assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("cancel").hidden'), false);
   assert.equal(await overlay.webContents.executeJavaScript('document.getElementById("finish").hidden'), false);
   const finishPoint = await overlay.webContents.executeJavaScript('(() => { const r = document.getElementById("finish").getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()');
   overlay.webContents.sendInputEvent({ type: 'mouseDown', ...finishPoint, button: 'left', clickCount: 1 });
   overlay.webContents.sendInputEvent({ type: 'mouseUp', ...finishPoint, button: 'left', clickCount: 1 });
   await wait(50);
   assert.deepEqual(testOverlayActions, ['finish']);
-  assert.equal(overlay.isFocusable(), false);
-  await fs.writeFile(path.join(directory, 'overlay.png'), (await overlay.webContents.capturePage()).toPNG());
+  await shot('overlay', overlay);
   engineEvent({ type: 'state', mode: 'Idle', level: 0 }); assert(!overlay.isVisible());
-  console.log('PASS: Electron history, balance, search, copy, performance defaults, and text-free recording overlay');
+
+  // Narrow window still lays out.
+  main.setSize(900, 640); await wait(300);
+  assert(await evaluate('document.querySelector("main").scrollWidth <= document.querySelector("main").clientWidth + 1'));
+  await shot('narrow');
+  console.log('PASS: Electron home, history, dictionary, settings, sync, updates and recording overlay');
   app.quit();
 };

@@ -104,3 +104,15 @@ test('digests keep values out of bookkeeping and differ per item', () => {
   assert.notEqual(vault.digest('a', 'k'), vault.digest('b', 'k'));
   assert.ok(!vault.digest('a', 'sk-secret').includes('secret'));
 });
+
+test('recovery keys name the account and survive sloppy typing', () => {
+  const key = vault.newRecoveryKey();
+  assert.match(key, /^([0-9A-Z]{5}-){5}[0-9A-Z]{5}$/);
+  const parsed = vault.parseRecoveryKey(key.toLowerCase().replace(/-/g, ' '));
+  assert.equal(parsed.key, key);
+  assert.equal(parsed.username, `lw-${key.slice(0, 5).toLowerCase()}${key.slice(6, 11).toLowerCase()}@sync.invalid`);
+  assert.equal(vault.isRecoveryUsername(parsed.username), true);
+  assert.equal(vault.normalizeUsername(parsed.username), parsed.username);
+  assert.equal(vault.newRecoveryKey(parsed.id).slice(0, 11), key.slice(0, 11), 'a new key keeps the account id');
+  assert.throws(() => vault.parseRecoveryKey('too-short'), /30-character/);
+});

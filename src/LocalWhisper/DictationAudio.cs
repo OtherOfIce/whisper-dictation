@@ -22,6 +22,22 @@ internal sealed class DictationAudio
         active.TryAdd(this, 0);
         lifetime = Task.Run(RunAsync);
     }
+    // Devices muted by a dictation are listed here until restored, so a crash cannot leave the PC silent.
+    private static readonly string MutedFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalWhisper", "muted-devices.txt");
+    public static Task RecoverMutedAsync() => Task.Run(async () =>
+    {
+        await gate.WaitAsync();
+        try { RecoverMuted(MutedFile, WindowsAudio.Unmute); }
+        catch (Exception ex) { EngineLog.Error("Restoring muted devices", ex); }
+        finally { gate.Release(); }
+    });
+    internal static void RecoverMuted(string file, Action<string> unmute)
+    {
+        if (!File.Exists(file)) return;
+        foreach (var id in File.ReadAllLines(file).Where(line => line.Length > 0))
+            try { unmute(id); } catch { /* The device may be gone; nothing else can restore it. */ }
+        File.Delete(file);
+    }
     public static Task RestoreAllAsync() => Task.WhenAll(active.Keys.Select(item => item.RestoreAsync()));
     public Task RestoreAsync() { released.TrySetResult(); return lifetime; }
 
@@ -70,6 +86,9 @@ internal sealed class DictationAudio
                 }
             }
             catch { /* Audio control must never prevent dictation. */ }
+            if (muted.Count > 0)
+                try { Directory.CreateDirectory(Path.GetDirectoryName(MutedFile)!); File.WriteAllLines(MutedFile, muted.Select(device => device.ID)); }
+                catch (Exception ex) { EngineLog.Error("Recording muted devices", ex); }
             try
             {
                 var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
@@ -87,6 +106,12 @@ internal sealed class DictationAudio
             }
             catch { /* Muting still covers systems without media controls. */ }
         }
+        public static void Unmute(string id)
+        {
+            using var devices = new MMDeviceEnumerator();
+            using var device = devices.GetDevice(id);
+            device.AudioEndpointVolume.Mute = false;
+        }
         public async Task RestoreAsync()
         {
             foreach (var device in muted)
@@ -95,6 +120,8 @@ internal sealed class DictationAudio
                 catch { }
                 finally { try { device.Dispose(); } catch { } }
             }
+            if (muted.Count > 0) try { File.Delete(MutedFile); } catch { }
+            muted.Clear();
             foreach (var session in paused)
             {
                 try

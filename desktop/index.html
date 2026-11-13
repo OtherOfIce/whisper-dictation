@@ -1,40 +1,432 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src blob:; connect-src 'none'"><title>Local Whisper</title><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="costs.css"></head>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src blob:; connect-src 'none'">
+  <title>Local Whisper</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
 <body>
-<div class="titlebar"><span class="brand"><span data-icon="wave"></span> local whisper</span><div class="window-actions"><button data-window="minimize" aria-label="Minimize"><span data-icon="minus"></span></button><button data-window="maximize" aria-label="Maximize"><span data-icon="square"></span></button><button data-window="close" aria-label="Close to tray"><span data-icon="x"></span></button></div></div>
-<nav class="rail" aria-label="Main navigation"><button class="nav-button selected" data-view="history" title="History" aria-label="History"><span data-icon="history"></span></button><button class="nav-button" data-view="settings" title="Settings" aria-label="Settings"><span data-icon="settings"></span></button><div class="rail-bottom"><span class="engine-dot" title="Connecting to dictation engine"></span></div></nav>
-<main>
-<section id="history-view">
-  <header class="page-header"><div><div class="eyebrow">DICTATION HISTORY</div><h1>History<span class="period">.</span></h1><p class="subtle">Your words, saved on this device.</p></div><div class="shortcut"><span data-icon="wave"></span><span id="shortcut-hint">Press Ctrl + Win to speak</span></div></header>
-  <div class="workspace"><div class="history-column"><div class="list-toolbar"><span id="history-count">No transcripts yet</span><label class="search"><span data-icon="search"></span><input id="search" type="search" placeholder="Search your words" aria-label="Search transcripts"></label></div><div id="history-list"></div><button id="load-more" class="text-button" hidden>Show more</button></div>
-  <aside><div class="balance-card"><div class="card-top"><span class="eyebrow">OPENROUTER</span><button id="refresh-balance" class="icon-button" title="Refresh balance" aria-label="Refresh balance"><span data-icon="refresh"></span></button></div><div id="balance-label" class="subtle">Remaining credit</div><div id="balance-amount" class="balance-number">&mdash;</div><div id="balance-detail" class="balance-detail">Connecting to your account&hellip;</div><div class="usage-row"><span>This key &middot; total used</span><strong id="usage-total">&mdash;</strong></div><div class="usage-row"><span>Used today</span><strong id="usage-today">&mdash;</strong></div><div class="history-costs"><div class="history-costs-head"><span>Cost split</span><span class="cost-details"><button class="cost-info" aria-label="Show cost by model" aria-describedby="cost-model-breakdown"><span data-icon="info"></span></button><span id="cost-model-breakdown" class="cost-popover" role="tooltip"></span></span></div><div class="cost-split"><span>Voice <strong id="cost-voice">&mdash;</strong></span><span>Luna <strong id="cost-cleanup">&mdash;</strong></span></div></div><div id="balance-updated" class="small muted"></div></div><div id="gateway-cost-card" class="balance-card gateway-cost-card" hidden><div class="card-top"><span class="eyebrow">VERCEL AI GATEWAY</span><button id="refresh-gateway-balance" class="icon-button" title="Refresh Vercel balance" aria-label="Refresh Vercel balance"><span data-icon="refresh"></span></button></div><div class="subtle">Remaining credit</div><div id="gateway-balance-amount" class="balance-number">&mdash;</div><div id="gateway-balance-detail" class="balance-detail">Connecting to your account&hellip;</div><div class="usage-row"><span>Team &middot; total used</span><strong id="gateway-usage-total">&mdash;</strong></div><div id="gateway-balance-updated" class="small muted"></div></div>
-  <div class="word-stats" aria-label="Dictated word counts"><div class="eyebrow">YOUR WORDS</div><div class="word-stats-grid"><div><strong id="words-total">0</strong><span>Total</span></div><div><strong id="words-today">0</strong><span>Today</span></div><div><strong id="words-week">0</strong><span>Last 7 days</span></div></div><p class="small muted">Based on saved history, before cleanup.</p></div><div class="tip-card"><span class="tip-icon" data-icon="mic"></span><h3>A little less typing.</h3><p id="shortcut-tip">Press Ctrl + Win to dictate.<br>Press it again to finish.</p><div class="divider"></div><p class="small">Your microphone is only active when you start a recording.</p></div></aside></div>
-</section>
-<section id="settings-view" hidden><header class="page-header"><div><div class="eyebrow">MAKE IT YOURS</div><h1>Settings<span class="period">.</span></h1><p class="subtle">Keys, recording, and local history.</p></div></header><form id="settings-form" class="settings-panel"><div class="settings-section"><h2>OpenRouter</h2><p class="muted">Your saved key is shared with the dictation engine. It never appears in history.</p><label class="field-label" for="api-key">API key <span id="key-status" class="saved-badge"></span></label><input id="api-key" type="password" autocomplete="off" placeholder="Enter a key, or leave blank to keep the saved key"><p class="small muted">The app checks usage and balance using this key.</p><details class="advanced"><summary>Import cost history</summary><p class="small muted">Use a temporary OpenRouter management key to import the last 30 completed UTC days. The key stays in memory and is not saved.</p><label class="field-label" for="management-key">Temporary management key</label><input id="management-key" type="password" autocomplete="off" placeholder="Paste once to import activity"><div class="cost-import-actions"><button id="import-costs" class="secondary-button" type="button"><span data-icon="download"></span> Import costs</button><span id="import-costs-status" class="small muted" role="status"></span></div><p class="small muted management-key-note">Delete the temporary key from OpenRouter after the import succeeds.</p></details></div>
-<div class="settings-section"><h2>xAI</h2><p class="muted">Required for Grok’s direct streaming transcription. The key is encrypted for your Windows account.</p><label class="field-label" for="xai-api-key">API key <span id="xai-key-status" class="saved-badge"></span></label><input id="xai-api-key" type="password" autocomplete="off" placeholder="Enter a key, or leave blank to keep the saved key"></div>
-<div class="settings-section"><h2>Vercel AI Gateway</h2><p class="muted">Required for MAI streaming transcription. The key is encrypted for your Windows account.</p><label class="field-label" for="gateway-api-key">API key <span id="gateway-key-status" class="saved-badge"></span></label><input id="gateway-api-key" type="password" autocomplete="off" placeholder="Enter a key, or leave blank to keep the saved key"></div>
-<div id="live-chunks-section" class="settings-section toggle-row"><div><h2>Transcribe while speaking</h2><p class="muted">Send file chunks at pauses to reduce the wait after Stop.</p><p id="live-chunks-note" class="small muted">Experimental. Chunks may change punctuation or lose context.<br>Cancel stops pending work; it cannot undo audio already uploaded.</p></div><label class="switch"><input id="live-chunks" type="checkbox" aria-label="Transcribe while speaking"><span></span></label></div>
-<div id="double-transcription-section" class="settings-section toggle-row"><div><h2>Race two MAI requests</h2><p class="muted">Send two requests together and use the first transcript. If both are slow, also try GPT. Every request continues so its full time and cost can be measured.</p></div><label class="switch"><input id="double-transcription" type="checkbox" aria-label="Race two MAI requests"><span></span></label></div>
-<div class="settings-section"><h2>Keyboard shortcut</h2><p class="muted">Use two or more modifiers, or a modifier with a letter, number, function key, or Space.</p><div class="shortcut-controls"><output id="shortcut-value">Ctrl + Win</output><button id="rebind-shortcut" class="secondary-button" type="button">Change shortcut</button><button id="reset-shortcut" class="text-button" type="button">Reset to Ctrl + Win</button></div><p id="shortcut-status" class="small muted" role="status">Changes apply when you save Settings.</p></div>
-<div class="settings-section"><h2>Microphone</h2><label class="field-label" for="microphone-device">Recording input</label><select id="microphone-device"><option value="">System default</option></select><p class="small muted">Use the system default or choose a specific microphone. Changes apply to the next recording.</p><button id="refresh-microphones" class="secondary-button" type="button">Refresh microphones</button><div class="microphone-test-controls"><button id="test-microphone" class="secondary-button" type="button">Test microphone</button><button id="play-microphone-test" class="secondary-button" type="button" disabled>Play test</button><meter id="microphone-test-level" min="0" max="1" value="0" aria-label="Microphone input level"></meter></div><p id="microphone-test-status" class="small muted" role="status">Record up to five seconds, then play it back. The test stays on this device and is discarded when you leave Settings.</p></div>
-<div class="settings-section toggle-row"><div><h2>Default to lock mode</h2><p class="muted">When off, hold your shortcut to speak and release to insert.</p></div><label class="switch"><input id="lock-mode" type="checkbox" aria-label="Default to lock mode"><span></span></label></div>
-<div class="settings-section"><h2>Voice model</h2><p class="muted">Choose the model that turns recordings into text.</p><label class="field-label" for="transcription-model">Transcription model</label><select id="transcription-model"><option value="gpt-transcribe">GPT-Transcribe</option><option value="mai-transcribe-2-verbatim">MAI-Transcribe-2 · Verbatim</option><option value="mai-transcribe-2-clean" selected>MAI-Transcribe-2 · Clean</option><option value="grok-voice-transcribe-2-streaming">Grok Voice Transcribe 2.0 · Streaming (experimental)</option></select><p class="small muted">Streaming models send audio continuously while you record. Verbatim keeps fillers and false starts. Clean removes some spoken disfluencies.</p></div>
-<div class="settings-section"><h2>Text cleanup</h2><p class="muted">Resolve spoken corrections and formatting instructions after transcription.</p><label class="field-label" for="cleanup-mode">Cleanup mode</label><select id="cleanup-mode"><option value="off">Off</option><option value="luna">Luna 6</option><option value="luna-fast">Luna 6 Fast</option></select><p id="cleanup-note" class="small muted">Adds a separate OpenRouter request before pasting. To fit the insertion, Luna also receives up to 500 nearby characters from the focused text field; password fields are excluded. Fast uses priority processing at twice the token price. If cleanup fails, the original transcript is used.</p></div>
-<div class="settings-section"><h2>Dictionary</h2><p class="muted">Paste your preferred names, spellings, and phrases, one per line. Models that support dictionary hints receive the list with each recording, even when cleanup is off.</p><label class="field-label" for="dictionary-terms">Preferred terms and phrases</label><textarea id="dictionary-terms" rows="6" placeholder="Astra&#10;Raikage&#10;Sea of Storms"></textarea><p id="dictionary-hints-note" class="small muted">Blank lines and duplicates are ignored. Grok accepts up to 100 terms of 50 characters each; other models accept the app limit of 1,000 terms and 12,000 characters. These are hints, not guaranteed replacements.</p><div class="dictionary-actions"><button id="import-wispr" class="secondary-button" type="button"><span data-icon="download"></span> Import from Wispr Flow</button><span id="import-wispr-status" class="small muted" role="status"></span></div></div>
-<div id="account-section" class="settings-section"><h2>Account and sync</h2><p class="muted">Keep API keys, voice settings and a dictionary the same on your devices. Each device only gets what you allow it. Shortcut, microphone and other device settings stay local.</p><div id="signed-out-panel"><div class="account-modes" role="group" aria-label="How to connect this device"><button type="button" class="secondary-button" data-account-mode="sign-in">Sign in</button><button type="button" class="secondary-button" data-account-mode="create">Create account</button><button type="button" class="secondary-button" data-account-mode="pair">Pair with a code</button></div><p id="account-mode-help" class="small muted"></p><div id="credentials-fields" data-passphrase-group><label class="field-label" for="account-username">Username (your email address; nothing is sent to it)</label><input id="account-username" type="email" autocomplete="username" placeholder="you@example.com"><label class="field-label" for="account-passphrase">Passphrase</label><div class="reveal-field"><input id="account-passphrase" type="password" autocomplete="current-password" data-passphrase spellcheck="false"><button type="button" class="reveal-button" data-reveal="account-passphrase account-passphrase-confirm" aria-pressed="false">Show</button></div><div id="confirm-row"><label class="field-label" for="account-passphrase-confirm">Type the passphrase again</label><input id="account-passphrase-confirm" type="password" autocomplete="new-password" data-passphrase spellcheck="false"></div><p class="caps-warning small" role="status" hidden>Caps Lock is on</p></div><div id="pair-fields" hidden><label class="field-label" for="account-pair-code">Pairing code</label><input id="account-pair-code" type="text" autocomplete="off" spellcheck="false" maxlength="20" placeholder="XXXX-XXXX-XXXX"></div><div class="dictionary-actions"><button id="account-submit" type="button" class="secondary-button">Sign in</button></div><details id="shared-key-details" class="advanced"><summary>Use a shared sync key instead</summary><p class="muted">The older setup shares only the dictionary. Signing in replaces it.</p><label class="field-label" for="sync-key">Shared sync key</label><input id="sync-key" type="password" autocomplete="off" placeholder="Leave blank to keep the saved key"><div class="dictionary-actions"><button id="connect-sync" type="button" class="secondary-button">Save sync connection</button><button id="disconnect-sync" type="button" class="secondary-button">Disconnect</button></div></details></div><div id="signed-in-panel" hidden><p>Signed in as <strong id="account-username-label"></strong> on <strong id="account-device-label"></strong></p><p id="account-grants" class="muted"></p><div id="devices-panel" hidden><h3>Devices</h3><ul id="device-list" class="device-list"></ul><div class="dictionary-actions"><button id="add-device" type="button" class="secondary-button">Add device</button></div><div id="device-form" class="device-form" hidden><h3 id="device-form-title">Add device</h3><label class="field-label" for="device-name">Name</label><input id="device-name" type="text" maxlength="60" placeholder="Phone, Work laptop…"><p class="field-label">What it syncs</p><label class="check-row"><input id="grant-secrets" type="checkbox"> API keys <span id="grant-secrets-note" class="small muted"></span></label><label class="check-row"><input id="grant-settings" type="checkbox"> Voice settings (model, cleanup, race)</label><label class="check-row"><input id="grant-history" type="checkbox" disabled> History <span class="small muted">coming later</span></label><label class="field-label" for="device-dictionary">Dictionary</label><select id="device-dictionary"></select><input id="device-dictionary-new" type="text" maxlength="30" placeholder="New list name, for example Work" hidden><div class="dictionary-actions"><button id="device-save" type="button" class="secondary-button">Create pairing code</button><button id="device-cancel" type="button" class="text-button">Cancel</button></div></div><div id="pair-code-panel" class="pair-code-panel" hidden><p class="small muted">On the new device, choose <strong>Pair with a code</strong> and enter:</p><p id="pair-code" class="pair-code"></p><p id="pair-code-expiry" class="small muted"></p><div class="dictionary-actions"><button id="pair-code-done" type="button" class="secondary-button">Done</button></div></div><details class="advanced" data-passphrase-group><summary>Change passphrase</summary><p class="muted">Paired devices keep working. Other desktops signed in with the old passphrase are signed out.</p><label class="field-label" for="new-passphrase">New passphrase</label><div class="reveal-field"><input id="new-passphrase" type="password" autocomplete="new-password" data-passphrase spellcheck="false"><button type="button" class="reveal-button" data-reveal="new-passphrase new-passphrase-confirm" aria-pressed="false">Show</button></div><label class="field-label" for="new-passphrase-confirm">Type it again</label><input id="new-passphrase-confirm" type="password" autocomplete="new-password" data-passphrase spellcheck="false"><p class="caps-warning small" role="status" hidden>Caps Lock is on</p><div class="dictionary-actions"><button id="change-passphrase" type="button" class="secondary-button">Change passphrase</button></div></details></div></div><div class="dictionary-actions"><button id="sync-now" type="button" class="secondary-button">Sync now</button><button id="sign-out" type="button" class="secondary-button" hidden>Sign out</button><span id="sync-status" class="small muted" role="status">Sync is off</span></div><details id="server-details" class="advanced"><summary>Server</summary><label class="field-label" for="sync-url">Convex site URL</label><input id="sync-url" type="url" autocomplete="off" placeholder="https://your-deployment.convex.site"></details></div>
-<div class="settings-section toggle-row"><div><h2>Pause media during dictation</h2><p class="muted">Pause supported players and mute other audio until dictation finishes or is cancelled. Resume players paused by Local Whisper afterward.</p></div><label class="switch"><input id="pause-media" type="checkbox" aria-label="Pause media during dictation"><span></span></label></div>
-<div class="settings-section toggle-row"><div><h2>Learn from corrections</h2><p class="muted">When you change a dictated word in a supported text field, save the corrected spelling to the dictionary. A small popup lets you undo each new word.</p></div><label class="switch"><input id="auto-learn" type="checkbox" aria-label="Learn from corrections"><span></span></label></div>
-<div id="privacy-section" class="settings-section privacy-section"><h2>Privacy and cloud models</h2><p class="muted">GPT and MAI dictation sends audio and dictionary hints to OpenRouter and the model provider. Content retention depends on the service and your account settings.</p><details class="advanced"><summary>How OpenRouter, GPT, and MAI handle your data</summary>
-<p class="small muted"><strong>OpenRouter.</strong> Does not store inputs or outputs by default. Content logging and use of content to improve its product are opt-in. It keeps request metadata, such as usage and latency, and anonymous categories from sampled prompts. <a href="https://openrouter.ai/docs/guides/privacy/data-collection" target="_blank" rel="noreferrer">OpenRouter policy</a>.</p>
-<p class="small muted"><strong>GPT-Transcribe.</strong> OpenAI lists no abuse-monitoring or application-state retention for its audio transcription endpoint. API content is not used for training unless explicitly shared. <a href="https://developers.openai.com/api/docs/guides/your-data" target="_blank" rel="noreferrer">OpenAI API policy</a>.</p>
-<p class="small muted"><strong>MAI-Transcribe-2.</strong> OpenRouter currently routes this model to Azure. Microsoft's policy says fast transcription does not retain customer audio or transcripts; MAI uses Azure's fast transcription API. This is the documented service policy, rather than a separate guarantee from this app. <a href="https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/speech-service/speech-to-text/data-privacy-security" target="_blank" rel="noreferrer">Microsoft Speech policy</a>.</p>
-<p class="small muted"><strong>Luna cleanup.</strong> Sends the transcript, dictionary, and up to 500 nearby characters to OpenRouter and OpenAI. OpenAI's text API may retain content for abuse monitoring for up to 30 days by default, with legal and safety exceptions. Not used for training does not mean not stored.</p>
-<p class="small muted">Review logging, training, and zero data retention in <a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noreferrer">OpenRouter privacy settings</a>. This app does not enforce zero data retention. These notes cover OpenRouter dictation; MAI streaming through Vercel and direct Grok streaming use separate services and policies.</p>
-<p class="small muted">Policies checked 3 October 2026. Recordings and transcripts also remain in this app's local History until you delete them.</p>
-</details></div>
-<div class="settings-section"><h2>Saved on this device</h2><p class="muted">Transcripts and timings are encrypted for your Windows account. Original WAV recordings are stored in the local history database. You can play, download, or delete them from History.</p></div><div class="form-footer"><span id="save-message" role="status"></span><button class="primary-button" type="submit">Save settings <span data-icon="arrow"></span></button></div></form></section>
-</main>
-<div id="drawer-backdrop" class="drawer-backdrop" hidden></div><aside id="performance-drawer" class="drawer" hidden aria-label="Transcript performance"><div class="drawer-header"><div><div class="eyebrow">BEHIND THE WORDS</div><h2>Performance</h2></div><button id="close-drawer" class="icon-button" aria-label="Close performance"><span data-icon="x"></span></button></div><div class="latency-card"><div class="subtle">Stop to paste</div><div id="latency-value" class="latency-number">&mdash;</div><p id="latency-caption" class="small muted"></p></div><div class="timing-controls"><span>Time breakdown</span><label><input id="include-recording" type="checkbox"> Include recording</label></div><div id="timings"></div><p id="timing-note" class="small muted"></p><div id="timing-facts" class="timing-facts"></div><p class="small muted timing-explanation">Times are measured on this device. Transcribing audio includes both network and provider time.</p><details id="original-transcript" class="advanced" hidden><summary>Original transcript</summary><p id="original-text" class="transcript-text"></p></details><button id="export-timings" class="secondary-button"><span data-icon="download"></span> Export timings</button></aside>
-<aside id="comparison-drawer" class="drawer" hidden aria-label="Compare transcripts"><div class="drawer-header"><div><div class="eyebrow">SAME RECORDING</div><h2>Compare transcripts</h2></div><button id="close-comparison" class="icon-button" aria-label="Close comparison"><span data-icon="x"></span></button></div><div id="comparison-versions"></div><div class="comparison-create"><label class="field-label" for="alternate-model">Transcribe again with</label><div class="comparison-create-row"><select id="alternate-model"><option value="mai-transcribe-2-clean">MAI-Transcribe-2 · Clean</option><option value="mai-transcribe-2-verbatim">MAI-Transcribe-2 · Verbatim</option><option value="gpt-transcribe">GPT-Transcribe</option><option value="grok-voice-transcribe-2-streaming">Grok Voice Transcribe 2.0</option></select><button id="create-alternate" class="primary-button">Transcribe</button></div><p class="small muted">Uses the saved recording and current dictionary. Separate Luna cleanup is not applied.</p></div></aside>
-<div id="toast" role="status" hidden></div><script src="streaming-diagnostics.js"></script><script src="renderer.js"></script>
-</body></html>
+  <div class="titlebar">
+    <div class="window-actions">
+      <button data-window="minimize" aria-label="Minimize"><span data-icon="minus"></span></button>
+      <button data-window="maximize" aria-label="Maximize"><span data-icon="square"></span></button>
+      <button data-window="close" aria-label="Close to tray"><span data-icon="x"></span></button>
+    </div>
+  </div>
+
+  <nav class="sidebar" aria-label="Main navigation">
+    <div class="brand"><span data-icon="wave"></span> Local Whisper</div>
+    <button class="nav-item selected" data-view="home"><span data-icon="home"></span>Home</button>
+    <button class="nav-item" data-view="history"><span data-icon="history"></span>History</button>
+    <button class="nav-item" data-view="dictionary"><span data-icon="book"></span>Dictionary</button>
+    <div class="sidebar-bottom">
+      <div id="update-card" class="update-card" hidden>
+        <strong id="update-title">Update ready</strong>
+        <span id="update-detail" class="small"></span>
+        <button id="update-install" class="primary-button small-button" type="button">Restart now</button>
+      </div>
+      <button class="nav-item" id="open-settings"><span data-icon="settings"></span>Settings</button>
+      <div id="engine-status" class="engine-status" role="status"><span class="engine-dot"></span><span id="engine-label">Starting…</span></div>
+    </div>
+  </nav>
+
+  <main>
+    <div id="engine-banner" class="banner warning" hidden>
+      <span>The dictation engine stopped. It is restarting automatically.</span>
+      <button id="engine-restart" class="secondary-button small-button" type="button">Restart now</button>
+    </div>
+
+    <!-- Home -->
+    <section id="home-view" class="view">
+      <header class="page-header">
+        <div>
+          <h1 id="greeting">Hello.</h1>
+          <p class="subtle" id="home-subtitle">Speak, don’t type.</p>
+        </div>
+      </header>
+      <div id="setup-card" class="setup-card" hidden>
+        <div>
+          <h2>Finish setting up</h2>
+          <p class="muted">Add an OpenRouter API key so Local Whisper can turn your voice into text. Keys stay encrypted on this device.</p>
+        </div>
+        <button id="setup-open-keys" class="primary-button" type="button">Add API key</button>
+      </div>
+      <div class="home-grid">
+        <div class="home-main">
+          <div class="stat-grid">
+            <div class="stat"><strong id="stat-words">0</strong><span>words dictated</span></div>
+            <div class="stat"><strong id="stat-wpm">—</strong><span>words per minute</span></div>
+            <div class="stat"><strong id="stat-saved">0 min</strong><span>time saved vs typing</span></div>
+            <div class="stat"><strong id="stat-streak">0</strong><span id="stat-streak-label">day streak</span></div>
+          </div>
+          <div class="section-head">
+            <h2>Recent</h2>
+            <button class="text-button" data-goto="history" type="button">See all history <span data-icon="arrow"></span></button>
+          </div>
+          <div id="recent-list" class="transcript-list"></div>
+        </div>
+        <aside class="home-side">
+          <div class="card shortcut-card">
+            <div class="eyebrow">Dictate</div>
+            <div id="shortcut-keys" class="keycaps"></div>
+            <p id="shortcut-tip" class="small muted"></p>
+            <div class="today-row"><span>Today</span><strong id="stat-today">0 words</strong></div>
+          </div>
+          <div class="card balance-card">
+            <div class="card-top">
+              <span class="eyebrow">OpenRouter credit</span>
+              <button id="refresh-balance" class="icon-button" title="Refresh balance" aria-label="Refresh balance"><span data-icon="refresh"></span></button>
+            </div>
+            <div id="balance-amount" class="balance-number">—</div>
+            <div id="balance-label" class="small muted">Remaining credit</div>
+            <div class="usage-row"><span>Used today</span><strong id="usage-today">—</strong></div>
+            <div class="usage-row"><span>This key, all time</span><strong id="usage-total">—</strong></div>
+            <div class="usage-row cost-row">
+              <span>Voice <strong id="cost-voice">—</strong> · Cleanup <strong id="cost-cleanup">—</strong></span>
+              <span class="cost-details">
+                <button class="cost-info icon-button" aria-label="Show cost by model" aria-describedby="cost-model-breakdown"><span data-icon="info"></span></button>
+                <span id="cost-model-breakdown" class="popover" role="tooltip"></span>
+              </span>
+            </div>
+            <div id="balance-detail" class="small muted"></div>
+          </div>
+          <div id="gateway-cost-card" class="card balance-card" hidden>
+            <div class="card-top">
+              <span class="eyebrow">Vercel AI Gateway</span>
+              <button id="refresh-gateway-balance" class="icon-button" title="Refresh Vercel balance" aria-label="Refresh Vercel balance"><span data-icon="refresh"></span></button>
+            </div>
+            <div id="gateway-balance-amount" class="balance-number">—</div>
+            <div class="usage-row"><span>Team, all time</span><strong id="gateway-usage-total">—</strong></div>
+            <div id="gateway-balance-detail" class="small muted"></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- History -->
+    <section id="history-view" class="view" hidden>
+      <header class="page-header">
+        <div>
+          <h1>History</h1>
+          <p class="subtle" id="history-count">Saved on this device</p>
+        </div>
+        <label class="search">
+          <span data-icon="search"></span>
+          <input id="search" type="search" placeholder="Search your words" aria-label="Search transcripts">
+        </label>
+      </header>
+      <div id="history-list" class="transcript-list"></div>
+      <button id="load-more" class="secondary-button load-more" type="button" hidden>Show more</button>
+    </section>
+
+    <!-- Dictionary -->
+    <section id="dictionary-view" class="view" hidden>
+      <header class="page-header">
+        <div>
+          <h1>Dictionary</h1>
+          <p class="subtle">Names, jargon and spellings you want transcribed correctly.</p>
+        </div>
+        <button id="dictionary-add-open" class="primary-button" type="button"><span data-icon="plus"></span> Add word</button>
+      </header>
+      <form id="dictionary-add" class="dictionary-add" hidden>
+        <label class="field-label" for="dictionary-new-term" hidden>Word or phrase</label>
+        <input id="dictionary-new-term" type="text" maxlength="120" placeholder="Word or phrase, e.g. Raikage (separate several with commas)" autocomplete="off">
+        <button class="primary-button" type="submit">Add</button>
+        <button id="dictionary-add-cancel" class="text-button" type="button">Cancel</button>
+      </form>
+      <div class="dictionary-toolbar">
+        <div class="segmented" role="tablist" aria-label="Filter dictionary">
+          <button class="selected" data-dictionary-filter="all" role="tab">All</button>
+          <button data-dictionary-filter="learned" role="tab"><span data-icon="sparkle"></span> Learned</button>
+          <button data-dictionary-filter="manual" role="tab">Added by you</button>
+        </div>
+        <label class="search compact">
+          <span data-icon="search"></span>
+          <input id="dictionary-search" type="search" placeholder="Search" aria-label="Search dictionary">
+        </label>
+      </div>
+      <div id="dictionary-list" class="dictionary-list"></div>
+      <div class="dictionary-footer">
+        <p id="dictionary-hints-note" class="small muted"></p>
+        <button id="import-wispr" class="secondary-button" type="button"><span data-icon="download"></span> Import from Wispr Flow</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- Settings -->
+  <div id="settings-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close-settings></div>
+    <div class="settings-dialog" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <nav class="settings-nav" aria-label="Settings sections">
+        <div class="eyebrow" id="settings-title">Settings</div>
+        <button class="settings-tab selected" data-tab="general"><span data-icon="sliders"></span>General</button>
+        <button class="settings-tab" data-tab="transcription"><span data-icon="mic"></span>Transcription</button>
+        <button class="settings-tab" data-tab="keys"><span data-icon="key"></span>API keys<span id="keys-badge" class="badge" hidden>1</span></button>
+        <button class="settings-tab" data-tab="sync"><span data-icon="devices"></span>Sync</button>
+        <button class="settings-tab" data-tab="privacy"><span data-icon="shield"></span>Privacy and data</button>
+        <button class="settings-tab" data-tab="about"><span data-icon="info"></span>About<span id="about-badge" class="badge" hidden>1</span></button>
+        <div class="settings-version">
+          <span id="settings-version">Local Whisper</span>
+          <button id="settings-check-updates" class="icon-button" title="Check for updates" aria-label="Check for updates"><span data-icon="refresh"></span></button>
+        </div>
+      </nav>
+      <div class="settings-body">
+        <button class="icon-button settings-close" data-close-settings aria-label="Close settings"><span data-icon="x"></span></button>
+
+        <section class="settings-page" data-page="general">
+          <h2>General</h2>
+          <div class="group">
+            <div class="row">
+              <div><h3>Dictation shortcut</h3><p id="shortcut-description" class="muted"></p><p id="shortcut-status" class="small muted" role="status"></p></div>
+              <div class="row-control">
+                <div id="shortcut-value" class="keycaps"></div>
+                <div class="button-row">
+                  <button id="rebind-shortcut" class="secondary-button" type="button">Change</button>
+                  <button id="reset-shortcut" class="text-button" type="button">Reset</button>
+                </div>
+              </div>
+            </div>
+            <div class="row">
+              <div><h3>Lock mode</h3><p class="muted">Press the shortcut once to start and again to finish. Turn off to hold while speaking and release to insert.</p></div>
+              <label class="switch"><input id="lock-mode" type="checkbox" aria-label="Lock mode"><span></span></label>
+            </div>
+          </div>
+          <div class="group">
+            <div class="row">
+              <div><h3>Microphone</h3><p class="muted">System default follows Windows. A chosen microphone is remembered.</p></div>
+              <div class="row-control">
+                <select id="microphone-device" aria-label="Microphone"><option value="">System default</option></select>
+                <button id="refresh-microphones" class="text-button" type="button">Refresh list</button>
+              </div>
+            </div>
+            <div class="row">
+              <div><h3>Test microphone</h3><p id="microphone-test-status" class="muted" role="status">Record up to five seconds and play it back. Nothing is sent or saved.</p></div>
+              <div class="row-control">
+                <meter id="microphone-test-level" min="0" max="1" value="0" aria-label="Microphone input level"></meter>
+                <div class="button-row">
+                  <button id="test-microphone" class="secondary-button" type="button">Test</button>
+                  <button id="play-microphone-test" class="secondary-button" type="button" disabled>Play</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="group">
+            <div class="row">
+              <div><h3>Pause media while dictating</h3><p class="muted">Pause players and mute other audio until you finish, then resume what Local Whisper paused.</p></div>
+              <label class="switch"><input id="pause-media" type="checkbox" aria-label="Pause media while dictating"><span></span></label>
+            </div>
+            <div class="row">
+              <div><h3>Learn from corrections</h3><p class="muted">When you fix a dictated word, add the new spelling to your dictionary. A popup lets you undo it.</p></div>
+              <label class="switch"><input id="auto-learn" type="checkbox" aria-label="Learn from corrections"><span></span></label>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-page" data-page="transcription" hidden>
+          <h2>Transcription</h2>
+          <div class="group">
+            <div class="row">
+              <div><h3>Voice model</h3><p class="muted">Clean removes some ums and false starts; Verbatim keeps them. Streaming models send audio while you speak.</p></div>
+              <select id="transcription-model" aria-label="Voice model"></select>
+            </div>
+            <div class="row">
+              <div><h3>Text cleanup</h3><p id="cleanup-note" class="muted">Fixes spoken corrections (“no, I meant…”) and formatting before pasting. Adds a short delay and a small cost.</p></div>
+              <select id="cleanup-mode" aria-label="Text cleanup">
+                <option value="off">Off</option>
+                <option value="luna">Luna 6</option>
+                <option value="luna-fast">Luna 6 Fast</option>
+              </select>
+            </div>
+          </div>
+          <div class="group">
+            <div class="row-heading">Advanced</div>
+            <div class="row">
+              <div><h3>Race two MAI requests</h3><p class="muted">Send two requests and use whichever answers first. Faster on bad days; costs a little more.</p></div>
+              <label class="switch"><input id="double-transcription" type="checkbox" aria-label="Race two MAI requests"><span></span></label>
+            </div>
+            <div class="row">
+              <div><h3>Transcribe while speaking</h3><p id="live-chunks-note" class="muted">Experimental. Uploads at pauses to shorten the wait, but can change punctuation.</p></div>
+              <label class="switch"><input id="live-chunks" type="checkbox" aria-label="Transcribe while speaking"><span></span></label>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-page" data-page="keys" hidden>
+          <h2>API keys</h2>
+          <p class="muted page-intro">Keys are encrypted for your Windows account and never shown again after saving.</p>
+          <div class="group">
+            <div class="key-row" data-key="apiKey">
+              <div class="key-head"><h3>OpenRouter</h3><span id="key-status" class="status-pill"></span></div>
+              <p class="muted">Needed for GPT, MAI and Luna cleanup. Also used to show your balance.</p>
+              <div class="key-input"><input id="api-key" type="password" autocomplete="off" placeholder="sk-or-…" aria-label="OpenRouter API key"><button class="secondary-button" data-save-key="apiKey" type="button">Save</button></div>
+            </div>
+            <div class="key-row" data-key="xaiApiKey">
+              <div class="key-head"><h3>xAI</h3><span id="xai-key-status" class="status-pill"></span></div>
+              <p class="muted">Only needed for Grok streaming.</p>
+              <div class="key-input"><input id="xai-api-key" type="password" autocomplete="off" placeholder="xai-…" aria-label="xAI API key"><button class="secondary-button" data-save-key="xaiApiKey" type="button">Save</button></div>
+            </div>
+            <div class="key-row" data-key="gatewayApiKey">
+              <div class="key-head"><h3>Vercel AI Gateway</h3><span id="gateway-key-status" class="status-pill"></span></div>
+              <p class="muted">Only needed for MAI streaming.</p>
+              <div class="key-input"><input id="gateway-api-key" type="password" autocomplete="off" placeholder="vck_…" aria-label="Vercel AI Gateway API key"><button class="secondary-button" data-save-key="gatewayApiKey" type="button">Save</button></div>
+            </div>
+          </div>
+          <details class="group disclosure">
+            <summary>Import OpenRouter cost history</summary>
+            <p class="small muted">Paste a temporary OpenRouter management key to import the last 30 days of spending. It is used once and not saved. Delete it from OpenRouter afterwards.</p>
+            <div class="key-input"><input id="management-key" type="password" autocomplete="off" placeholder="Temporary management key" aria-label="Temporary management key"><button id="import-costs" class="secondary-button" type="button">Import</button></div>
+            <p id="import-costs-status" class="small muted" role="status"></p>
+          </details>
+        </section>
+
+        <section class="settings-page" data-page="sync" hidden>
+          <h2>Sync</h2>
+          <p class="muted page-intro">Keep API keys, voice settings and your dictionary the same on your computers and phone. Keys are encrypted before they leave this device. Shortcut and microphone stay per device.</p>
+          <div id="sync-off">
+          <div class="group">
+            <div class="row-heading">First device</div>
+            <div class="row">
+              <div><h3>Set up sync</h3><p class="muted">Start syncing from this device. You will get a recovery key to keep somewhere safe.</p></div>
+              <button id="sync-turn-on" class="primary-button" type="button">Turn on</button>
+            </div>
+          </div>
+          <div class="group">
+            <div class="row-heading">Already syncing elsewhere</div>
+            <div class="row">
+              <div><h3>Join existing sync</h3><p class="muted">Already syncing elsewhere? On that device choose <em>Link a device</em>, then enter its code here.</p></div>
+              <div class="row-control inline">
+                <input id="sync-code" type="text" maxlength="20" autocomplete="off" spellcheck="false" placeholder="XXXX-XXXX-XXXX" aria-label="Link code">
+                <button id="sync-link" class="secondary-button" type="button">Link</button>
+              </div>
+            </div>
+            <details class="disclosure inline">
+              <summary>Use a recovery key, or an older email account</summary>
+              <div class="stack">
+                <label class="field-label" for="sync-recovery">Recovery key</label>
+                <div class="key-input"><input id="sync-recovery" type="text" autocomplete="off" spellcheck="false" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"><button id="sync-recover" class="secondary-button" type="button">Recover</button></div>
+                <label class="field-label" for="legacy-username">Email and passphrase (accounts made before linked devices)</label>
+                <input id="legacy-username" type="email" autocomplete="username" placeholder="you@example.com">
+                <div class="key-input"><input id="legacy-passphrase" type="password" autocomplete="current-password" placeholder="Passphrase"><button id="legacy-sign-in" class="secondary-button" type="button">Sign in</button></div>
+              </div>
+            </details>
+          </div>
+          </div>
+          <div id="sync-on" hidden>
+            <div class="group">
+              <div class="row">
+                <div><h3 id="sync-state-title">Sync is on</h3><p id="sync-status" class="muted" role="status"></p></div>
+                <button id="sync-now" class="secondary-button" type="button">Sync now</button>
+              </div>
+            </div>
+            <div class="group">
+              <div class="row-heading">Linked devices</div>
+              <ul id="device-list" class="device-list"></ul>
+              <div id="link-panel" class="link-panel" hidden>
+                <p class="small muted">On the new device, open Local Whisper settings → Sync (on Android: Voice input → Account sync) and enter:</p>
+                <p id="link-code" class="link-code"></p>
+                <p id="link-expiry" class="small muted"></p>
+                <button id="link-done" class="text-button" type="button">Done</button>
+              </div>
+              <div class="row"><div><p id="link-hint" class="muted">Add your phone or another computer.</p></div><button id="link-device" class="secondary-button" type="button">Link a device</button></div>
+            </div>
+            <div class="group">
+              <div class="row" id="recovery-row">
+                <div><h3>Recovery key</h3><p id="recovery-note" class="muted">If you lose all your devices, the recovery key brings your synced keys and dictionary back.</p><p id="recovery-key" class="recovery-key" hidden></p></div>
+                <button id="recovery-show" class="secondary-button" type="button">Show</button>
+              </div>
+              <div class="row">
+                <div><h3>Turn off sync on this device</h3><p class="muted">This device keeps its current keys and settings and stops syncing.</p></div>
+                <button id="sync-sign-out" class="danger-button" type="button">Turn off</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-page" data-page="privacy" hidden>
+          <h2>Privacy and data</h2>
+          <div class="group">
+            <div class="row"><div><h3>On this device</h3><p class="muted">Transcripts and timings are encrypted for your Windows account. Recordings are kept with your history so failed dictations can be retried. Delete any of them from History.</p></div></div>
+            <div class="row"><div><h3>Sent to cloud models</h3><p class="muted">Dictation audio and dictionary hints go to the model you choose (through OpenRouter, xAI or Vercel). Cleanup also sends the transcript and up to 500 nearby characters from the text field, never from password fields.</p></div></div>
+          </div>
+          <details class="group disclosure">
+            <summary>How OpenRouter, GPT and MAI handle your data</summary>
+            <p class="small muted"><strong>OpenRouter</strong> does not store inputs or outputs by default; logging is opt-in. <a href="https://openrouter.ai/docs/guides/privacy/data-collection" target="_blank" rel="noreferrer">OpenRouter policy</a>.</p>
+            <p class="small muted"><strong>GPT-Transcribe.</strong> OpenAI lists no abuse-monitoring retention for audio transcription, and API content is not used for training. <a href="https://developers.openai.com/api/docs/guides/your-data" target="_blank" rel="noreferrer">OpenAI API policy</a>.</p>
+            <p class="small muted"><strong>MAI-Transcribe-2</strong> runs on Azure fast transcription, which Microsoft says does not retain audio or transcripts. <a href="https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/speech-service/speech-to-text/data-privacy-security" target="_blank" rel="noreferrer">Microsoft Speech policy</a>.</p>
+            <p class="small muted"><strong>Luna cleanup.</strong> OpenAI's text API may keep content up to 30 days for abuse monitoring. Review logging and zero data retention in <a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noreferrer">OpenRouter privacy settings</a>.</p>
+            <p class="small muted">Policies checked 3 October 2026.</p>
+          </details>
+        </section>
+
+        <section class="settings-page" data-page="about" hidden>
+          <h2>About</h2>
+          <div class="group">
+            <div class="row">
+              <div><h3 id="about-version">Local Whisper</h3><p id="update-status" class="muted" role="status">Updates install automatically.</p></div>
+              <div class="button-row">
+                <button id="about-install" class="primary-button" type="button" hidden>Restart to update</button>
+                <button id="about-check" class="secondary-button" type="button">Check for updates</button>
+              </div>
+            </div>
+            <div class="row"><div><h3>Automatic updates</h3><p class="muted">Updates download in the background and install the next time you step away from your computer, or when you choose Restart.</p></div></div>
+          </div>
+          <div class="group">
+            <div class="row">
+              <div><h3>Diagnostics</h3><p class="muted">Engine logs help explain crashes. They never contain your transcripts or keys.</p></div>
+              <div class="button-row">
+                <button id="open-logs" class="secondary-button" type="button">Open logs</button>
+                <button id="about-restart-engine" class="secondary-button" type="button">Restart engine</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- Drawers -->
+  <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+  <aside id="performance-drawer" class="drawer" hidden aria-label="Transcript details">
+    <div class="drawer-header">
+      <div><div class="eyebrow">Behind the words</div><h2>Details</h2></div>
+      <button id="close-drawer" class="icon-button" aria-label="Close details"><span data-icon="x"></span></button>
+    </div>
+    <div class="latency-card">
+      <div class="subtle">Time to paste</div>
+      <div id="latency-value" class="latency-number">—</div>
+      <p id="latency-caption" class="small muted"></p>
+    </div>
+    <div class="timing-controls"><span>Time breakdown</span><label><input id="include-recording" type="checkbox"> Include recording</label></div>
+    <div id="timings"></div>
+    <p id="timing-note" class="small muted"></p>
+    <div id="timing-facts" class="timing-facts"></div>
+    <p class="small muted">Times are measured on this device. Transcribing includes network and provider time.</p>
+    <details id="original-transcript" class="disclosure" hidden><summary>Original transcript, before cleanup</summary><p id="original-text" class="transcript-text"></p></details>
+    <button id="export-timings" class="secondary-button"><span data-icon="download"></span> Export timings</button>
+  </aside>
+  <aside id="comparison-drawer" class="drawer" hidden aria-label="Compare transcripts">
+    <div class="drawer-header">
+      <div><div class="eyebrow">Same recording</div><h2>Compare transcripts</h2></div>
+      <button id="close-comparison" class="icon-button" aria-label="Close comparison"><span data-icon="x"></span></button>
+    </div>
+    <div id="comparison-versions"></div>
+    <div class="comparison-create">
+      <label class="field-label" for="alternate-model">Transcribe again with</label>
+      <div class="key-input"><select id="alternate-model"></select><button id="create-alternate" class="primary-button">Transcribe</button></div>
+      <p class="small muted">Uses the saved recording and current dictionary, without cleanup.</p>
+    </div>
+  </aside>
+
+  <div id="toast" class="toast" role="status" hidden><span id="toast-text"></span><button id="toast-action" class="text-button" type="button" hidden></button></div>
+
+  <script src="streaming-diagnostics.js"></script>
+  <script src="ui.js"></script>
+  <script src="history.js"></script>
+  <script src="dictionary.js"></script>
+  <script src="settings.js"></script>
+  <script src="sync.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -82,6 +82,23 @@ async function derivePairing(value, iterations = PAIR_ITERATIONS) {
   return { pairId: hmac(master, 'id').toString('hex'), key: hmac(master, 'key') };
 }
 
+// Recovery keys: 30 Crockford base32 characters shown as six groups of five. The first 10 name the account
+// (50 bits, the username is "lw-<id>@sync.invalid") and the other 20 are its secret (100 bits), used in place of a
+// passphrase. With that much entropy, guessing online or from a stolen database is not practical.
+const RECOVERY_DOMAIN = '@sync.invalid';
+const randomCode = length => [...crypto.randomBytes(length)].map(byte => PAIR_ALPHABET[byte & 31]).join('');
+function newRecoveryKey(id = randomCode(10)) {
+  const key = id + randomCode(20);
+  return key.match(/.{5}/g).join('-');
+}
+function parseRecoveryKey(value) {
+  const key = String(value ?? '').toUpperCase().replace(/[\s-]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
+  if (key.length !== 30 || ![...key].every(char => PAIR_ALPHABET.includes(char))) throw new Error('Enter the 30-character recovery key.');
+  const id = key.slice(0, 10);
+  return { id, secret: key.slice(10), username: `lw-${id.toLowerCase()}${RECOVERY_DOMAIN}`, key: key.match(/.{5}/g).join('-') };
+}
+const isRecoveryUsername = username => typeof username === 'string' && username.startsWith('lw-') && username.endsWith(RECOVERY_DOMAIN);
+
 const digest = (name, value) => value === null || value === undefined ? null : crypto.createHash('sha256').update(`${name}\n${value}`).digest('hex');
 
 // Decides what one synced item needs, from three views of it: the device's own value (as a digest), the
@@ -106,4 +123,4 @@ function reconcile(localDigest, remote, base, now) {
   return { base };
 }
 
-module.exports = { ITERATIONS, PAIR_ITERATIONS, normalizePassphrase, normalizeUsername, deriveAccount, newKeyring, sealKeyring, openKeyring, generatePairCode, normalizePairCode, derivePairing, seal, open, digest, reconcile };
+module.exports = { newRecoveryKey, parseRecoveryKey, isRecoveryUsername, ITERATIONS, PAIR_ITERATIONS, normalizePassphrase, normalizeUsername, deriveAccount, newKeyring, sealKeyring, openKeyring, generatePairCode, normalizePairCode, derivePairing, seal, open, digest, reconcile };

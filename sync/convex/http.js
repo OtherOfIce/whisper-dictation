@@ -21,7 +21,7 @@ http.route({
   path: '/dictionary/sync', method: 'POST',
   handler: httpAction(async (ctx, request) => {
     const shared = process.env.DICTIONARY_SYNC_KEY;
-    const sharedKeyOk = Boolean(shared) && shared.length >= 32 && request.headers.get('Authorization') === `Bearer ${shared}`;
+    const sharedKeyOk = Boolean(shared) && shared.length >= 32 && await sha256Hex(request.headers.get('Authorization') ?? '') === await sha256Hex(`Bearer ${shared}`);
     const token = sharedKeyOk ? null : bearerToken(request);
     if (!sharedKeyOk && !token) return new Response('Unauthorized', { status: 401 });
     if ((request.headers.get('Content-Length') ?? 0) > 100000) return new Response('Request too large', { status: 413 });
@@ -55,7 +55,8 @@ function authed(path, mutation, build = () => ({}), limit = 2000) {
       if (typeof args === 'string') return reply({ error: args }, 400);
       try {
         const result = await ctx.runMutation(makeFunctionReference(mutation), { ...args, tokenHash: await sha256Hex(token) });
-        return result ? reply(result) : reply({ error: 'Unauthorized' }, 401);
+        if (!result) return reply({ error: 'Unauthorized' }, 401);
+        return result.error ? reply({ error: result.error }, result.status ?? 400) : reply(result);
       } catch (error) { return reply({ error: error.message || 'The request could not be completed' }, 400); }
     })
   });
@@ -106,7 +107,8 @@ http.route({
 
 authed('/account/sign-out', 'auth:signOut');
 authed('/account/me', 'auth:me');
-authed('/account/passphrase', 'auth:changePassphrase', async body => isAuthKey(body.authKey) && isEnvelope(body.keyring) ? { authHash: await hashAuthKey(body.authKey), keyring: body.keyring } : 'Invalid request');
+authed('/account/passphrase', 'auth:changePassphrase', async body => isAuthKey(body.currentAuthKey) && isAuthKey(body.authKey) && isEnvelope(body.keyring)
+  ? { currentAuthHash: await hashAuthKey(body.currentAuthKey), authHash: await hashAuthKey(body.authKey), keyring: body.keyring } : 'Invalid request');
 authed('/devices/list', 'auth:listDevices');
 authed('/devices/pair', 'auth:createPairing', body => {
   const grants = validateGrants(body.grants);

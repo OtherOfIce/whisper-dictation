@@ -42,64 +42,97 @@ async function device(t, server, name, engine = {}) {
 }
 const storedValues = server => [...(server.tables.syncItems?.values() ?? [])].map(row => row.value).join('\n');
 
-test('the first desktop creates the account and its keys reach paired devices sealed', async t => {
+// Accounts made before linked devices: an email and passphrase, created by older desktops.
+async function legacyAccount(account, origin, email) {
+  const vault = require('../vault.cjs');
+  const { authKey, wrapKey } = await vault.deriveAccount(email, passphrase);
+  const response = await account.fetchImpl(origin + '/account/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: email, authKey, keyring: vault.sealKeyring(wrapKey, vault.newKeyring()), deviceName: 'Old desk' }) });
+  assert.equal(response.status, 200);
+}
+
+test('turning sync on links devices as equals, and keys only travel sealed', async t => {
   const server = (await serverModule).fakeServer();
   const desk = await device(t, server, 'Desk', { settings: { transcriptionModel: 'gpt-transcribe', cleanupMode: 'luna' }, secrets: { openrouter: 'sk-or-desk', gateway: 'gw-desk' }, terms: ['Astra'] });
-  await assert.rejects(desk.account.createAccount(server.origin, 'me@x.co', 'too short'), /12 characters/);
-  await desk.account.createAccount(server.origin, ' Me@X.co ', passphrase);
-  assert.deepEqual([desk.account.status().username, desk.account.status().admin], ['me@x.co', true]);
+  const recoveryKey = await desk.account.turnOn(server.origin);
+  assert.match(recoveryKey, /^([0-9A-Z]{5}-){5}[0-9A-Z]{5}$/);
+  assert.deepEqual([desk.account.status().kind, desk.account.status().canManage, desk.account.status().hasRecoveryKey], ['linked', true, true]);
   await desk.joined();
   assert.equal(desk.items.status().message, 'Synced');
   assert.ok(!storedValues(server).includes('sk-or-desk') && !storedValues(server).includes('gw-desk'), 'the server only stores ciphertext');
-  assert.ok(storedValues(server).includes('"gpt-transcribe"'));
 
-  // A personal laptop gets everything; a work laptop gets keys and its own dictionary, but not settings.
-  const personal = await device(t, server, 'Laptop');
-  const work = await device(t, server, 'Work PC', { settings: { cleanupMode: 'luna-fast' }, terms: ['Kubernetes'] });
-  const personalCode = await desk.account.addDevice({ name: 'Laptop', grants: { secrets: true, settings: true, history: false, dictionary: 'Personal' } });
-  const workCode = await desk.account.addDevice({ name: 'Work laptop', grants: { secrets: true, settings: false, history: false, dictionary: 'Work' } });
-  await personal.account.pair(server.origin, personalCode.code.toLowerCase().replace(/-/g, ' '));
-  await work.account.pair(server.origin, workCode.code);
-  await assert.rejects(work.account.pair(server.origin, workCode.code), /did not work/, 'a code works once');
-  await personal.joined(); await work.joined();
+  const laptop = await device(t, server, 'Laptop');
+  const { code } = await desk.account.linkDevice('Laptop');
+  await laptop.account.pair(server.origin, code.toLowerCase().replace(/-/g, ' '));
+  await assert.rejects((await device(t, server, 'Again')).account.pair(server.origin, code), /did not work/, 'a code works once');
+  await laptop.joined();
+  assert.deepEqual(laptop.local.secrets, { openrouter: 'sk-or-desk', xai: null, gateway: 'gw-desk' });
+  assert.deepEqual(laptop.local.settings, desk.local.settings);
+  assert.deepEqual(laptop.local.terms, ['Astra']);
 
-  assert.deepEqual(personal.local.secrets, { openrouter: 'sk-or-desk', xai: null, gateway: 'gw-desk' });
-  assert.deepEqual(personal.local.settings, desk.local.settings);
-  assert.deepEqual(personal.local.terms, ['Astra']);
-  assert.deepEqual(work.local.secrets.openrouter, 'sk-or-desk');
-  assert.equal(work.local.settings.cleanupMode, 'luna-fast', 'settings were not granted, so they stay as they were');
-  assert.deepEqual(work.local.terms, ['Kubernetes'], 'the work dictionary is separate');
-  assert.equal(work.account.status().name, 'Work laptop');
+  // The laptop is a peer: it can link a phone and remove devices, and changes flow every way.
+  assert.equal(laptop.account.status().canManage, true);
+  const phone = await device(t, server, 'Phone');
+  await phone.account.pair(server.origin, (await laptop.account.linkDevice('Phone')).code);
+  await phone.joined();
+  assert.equal(phone.local.secrets.openrouter, 'sk-or-desk');
+  phone.local.secrets.xai = 'xai-phone'; await phone.sync(); await desk.sync();
+  assert.equal(desk.local.secrets.xai, 'xai-phone');
+  desk.local.secrets.gateway = null; await desk.sync(); await laptop.sync();
+  assert.equal(laptop.local.secrets.gateway, null);
 
-  // A new key on the work laptop reaches the others; a cleared one is cleared everywhere it is granted.
-  work.local.secrets.xai = 'xai-work'; await work.sync(); await desk.sync(); await personal.sync();
-  assert.equal(desk.local.secrets.xai, 'xai-work');
-  assert.equal(personal.local.secrets.xai, 'xai-work');
-  desk.local.secrets.gateway = null; await desk.sync(); await work.sync();
-  assert.equal(work.local.secrets.gateway, null);
+  const phoneId = (await laptop.account.listDevices()).devices.find(item => item.name === 'Phone').id;
+  await laptop.account.removeDevice(phoneId);
+  await phone.sync();
+  assert.equal(phone.account.status().signedIn, false);
+  assert.match(phone.account.status().message, /removed from sync/);
+  assert.equal(phone.local.secrets.openrouter, 'sk-or-desk', 'a removed device keeps what it had');
 });
 
-test('a device paired without API keys never receives the key that opens them', async t => {
+test('the recovery key brings an account back, and a new one replaces it without signing devices out', async t => {
   const server = (await serverModule).fakeServer();
-  const desk = await device(t, server, 'Desk', { secrets: { openrouter: 'sk-or-desk' } });
-  await desk.account.createAccount(server.origin, 'me@x.co', passphrase); await desk.joined();
-  const kiosk = await device(t, server, 'Kiosk', { secrets: { openrouter: 'sk-kiosk-own' } });
-  await kiosk.account.pair(server.origin, (await desk.account.addDevice({ name: 'Kiosk', grants: { secrets: false, settings: true, history: false, dictionary: null } })).code);
-  await kiosk.joined();
-  assert.equal(kiosk.account.keyFor('secrets'), null);
-  assert.equal(kiosk.local.secrets.openrouter, 'sk-kiosk-own', 'its own key is neither replaced nor uploaded');
-  assert.equal(kiosk.dictionary.status().message, 'Dictionary sync is off for this device');
-  const listed = await desk.account.listDevices();
-  const entry = listed.devices.find(item => item.name === 'Kiosk');
-  await assert.rejects(desk.account.updateDevice(entry.id, { grants: { secrets: true, settings: true, history: false, dictionary: null } }), /pair it again/);
+  const desk = await device(t, server, 'Desk', { secrets: { openrouter: 'sk-desk' }, terms: ['Raikage'] });
+  const recoveryKey = await desk.account.turnOn(server.origin); await desk.joined();
+  const fresh = await device(t, server, 'New PC');
+  await assert.rejects(fresh.account.recover(server.origin, 'nope'), /30-character/);
+  await fresh.account.recover(server.origin, recoveryKey.toLowerCase());
+  await fresh.joined();
+  assert.equal(fresh.local.secrets.openrouter, 'sk-desk');
+  assert.deepEqual(fresh.local.terms, ['Raikage']);
+  assert.equal(fresh.account.recoveryKey(), recoveryKey);
+
+  const replaced = await desk.account.newRecoveryKey();
+  assert.notEqual(replaced, recoveryKey);
+  assert.equal(replaced.slice(0, 11), recoveryKey.slice(0, 11), 'same account');
+  await fresh.sync();
+  assert.equal(fresh.account.status().signedIn, true, 'linked devices stay signed in');
+  await assert.rejects((await device(t, server, 'Thief')).account.recover(server.origin, recoveryKey), /do not match/);
+  const again = await device(t, server, 'Again');
+  await again.account.recover(server.origin, replaced);
+  assert.deepEqual(again.account.keyFor('secrets'), desk.account.keyFor('secrets'), 'the same keys, wrapped again');
+});
+
+test('accounts made with an email and passphrase still sign in', async t => {
+  const server = (await serverModule).fakeServer();
+  const old = await device(t, server, 'Old desk');
+  await legacyAccount(old.account, server.origin, 'me@x.co');
+  const laptop = await device(t, server, 'Laptop', { secrets: { openrouter: 'sk-laptop' } });
+  await assert.rejects(laptop.account.signIn(server.origin, 'me@x.co', 'not the passphrase'), /do not match/);
+  await laptop.account.signIn(server.origin, 'Me@X.co', ` ${passphrase} `);
+  await laptop.joined();
+  assert.deepEqual([laptop.account.status().kind, laptop.account.status().username, laptop.account.status().canManage], ['legacy', 'me@x.co', true]);
+  await assert.rejects(laptop.account.newRecoveryKey(), /does not have the current recovery key/);
+  const phone = await device(t, server, 'Phone');
+  await phone.account.pair(server.origin, (await laptop.account.linkDevice()).code);
+  await phone.joined();
+  assert.equal(phone.local.secrets.openrouter, 'sk-laptop');
 });
 
 test('keys only a newer app uses are kept on the server until this device learns them', async t => {
   const server = (await serverModule).fakeServer();
   const desk = await device(t, server, 'Desk', { secrets: { openrouter: 'sk-1', futureProvider: 'fp-1' } });
-  await desk.account.createAccount(server.origin, 'me@x.co', passphrase); await desk.joined();
+  await desk.account.turnOn(server.origin); await desk.joined();
   const old = await device(t, server, 'Old laptop', { secrets: { openrouter: 'sk-1' } });
-  await old.account.pair(server.origin, (await desk.account.addDevice({ name: 'Old laptop', grants: { secrets: true, settings: true, history: false, dictionary: 'Personal' } })).code);
+  await old.account.pair(server.origin, (await desk.account.linkDevice('Old laptop')).code);
   await old.joined();
   assert.equal('futureProvider' in old.local.secrets, false);
   assert.ok([...server.tables.syncItems.values()].some(row => row.name === 'secrets.futureProvider' && !row.deleted), 'not deleted by a device that does not know it');
@@ -108,54 +141,12 @@ test('keys only a newer app uses are kept on the server until this device learns
   assert.equal(old.local.secrets.futureProvider, 'fp-1');
 });
 
-test('grant changes and removals made on the desktop reach the device', async t => {
-  const server = (await serverModule).fakeServer();
-  const desk = await device(t, server, 'Desk', { settings: { cleanupMode: 'luna' }, terms: ['Astra'] });
-  await desk.account.createAccount(server.origin, 'me@x.co', passphrase); await desk.joined();
-  const work = await device(t, server, 'Work PC', { terms: ['Kubernetes'] });
-  await work.account.pair(server.origin, (await desk.account.addDevice({ name: 'Work', grants: { secrets: true, settings: false, history: false, dictionary: 'Work' } })).code);
-  await work.joined();
-  const id = (await desk.account.listDevices()).devices.find(item => item.name === 'Work').id;
-
-  await desk.account.updateDevice(id, { grants: { secrets: true, settings: true, history: false, dictionary: 'Personal' } });
-  await work.sync();
-  assert.equal(work.local.settings.cleanupMode, 'luna', 'settings follow once granted');
-  assert.deepEqual(work.local.terms, ['Astra'], 'moving to another list replaces the local terms with it');
-  await work.sync(); await desk.sync();
-  assert.deepEqual(desk.local.terms, ['Astra'], 'and does not copy the old list into the new one');
-
-  await desk.account.removeDevice(id);
-  await work.sync();
-  assert.equal(work.account.status().signedIn, false);
-  assert.match(work.account.status().message, /signed out/);
-});
-
-test('another desktop signs in with the passphrase, and changing it signs that desktop out', async t => {
+test('turning sync off keeps local values and the next account starts fresh', async t => {
   const server = (await serverModule).fakeServer();
   const desk = await device(t, server, 'Desk', { secrets: { openrouter: 'sk-desk' } });
-  await desk.account.createAccount(server.origin, 'me@x.co', passphrase); await desk.joined();
-  await assert.rejects((await device(t, server, 'Copy')).account.createAccount(server.origin, 'me@x.co', passphrase), /already has an account/);
-  const laptop = await device(t, server, 'Laptop');
-  await assert.rejects(laptop.account.signIn(server.origin, 'me@x.co', 'not the passphrase'), /do not match/);
-  await laptop.account.signIn(server.origin, 'me@x.co', ` ${passphrase} `);
-  await laptop.joined();
-  assert.equal(laptop.local.secrets.openrouter, 'sk-desk');
-  assert.equal(laptop.account.status().admin, true);
-
-  await desk.account.changePassphrase('a different long passphrase');
-  await laptop.sync();
-  assert.equal(laptop.account.status().signedIn, false);
-  await assert.rejects(laptop.account.signIn(server.origin, 'me@x.co', passphrase), /do not match/);
-  await laptop.account.signIn(server.origin, 'me@x.co', 'a different long passphrase');
-  assert.deepEqual(laptop.account.keyFor('secrets'), desk.account.keyFor('secrets'), 'the same keys, wrapped again');
-});
-
-test('signing out keeps local values and the next account starts fresh', async t => {
-  const server = (await serverModule).fakeServer();
-  const desk = await device(t, server, 'Desk', { secrets: { openrouter: 'sk-desk' } });
-  await desk.account.createAccount(server.origin, 'me@x.co', passphrase); await desk.joined();
+  await desk.account.turnOn(server.origin); await desk.joined();
   await desk.account.signOut();
-  assert.deepEqual([desk.account.status().signedIn, desk.account.status().message], [false, 'Signed out']);
+  assert.deepEqual([desk.account.status().signedIn, desk.account.status().message, desk.account.recoveryKey()], [false, 'Signed out', null]);
   assert.equal(desk.local.secrets.openrouter, 'sk-desk');
   const reloaded = new Account({ file: desk.account.file, crypto: plain, fetchImpl: server.fetch });
   await reloaded.load();

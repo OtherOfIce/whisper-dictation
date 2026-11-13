@@ -19,6 +19,8 @@ internal sealed class Recorder : IDisposable
     public float Level { get; private set; }
     public double Seconds { get { lock (gate) return totalBytes / 32000d; } }
     public bool HasStopped => stopped.Task.IsCompleted;
+    // Set when the device faulted (e.g. was unplugged) or did not stop in time. What was captured before is still kept.
+    public Exception? Fault { get; private set; }
     public Recorder(bool live = false) : this(live ? RecorderMode.AtPauses : RecorderMode.AtStop) { }
     public Recorder(RecorderMode mode, int deviceNumber = -1)
     {
@@ -56,13 +58,15 @@ internal sealed class Recorder : IDisposable
     public void Start() => input.StartRecording();
     public async Task<byte[]> StopPcmAsync()
     {
-        if (!stopping) { stopping = true; input.StopRecording(); }
-        await stopped.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        if (!stopping) { stopping = true; try { input.StopRecording(); } catch (Exception ex) { Fault ??= ex; } }
+        try { await stopped.Task.WaitAsync(TimeSpan.FromSeconds(5)); }
+        catch (Exception ex) { Fault ??= ex; }
         lock (gate) return mode == RecorderMode.Stream ? [] : buffer.Drain();
     }
     public async Task<byte[]> StopAsync()
     {
         await StopPcmAsync();
+        if (Fault is { } fault) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(fault);
         return RecordedWav();
     }
     public byte[] RecordedWav()

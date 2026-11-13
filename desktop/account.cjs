@@ -5,12 +5,14 @@ const { validateUrl } = require('./dictionary-sync.cjs');
 
 const MIN_PASSPHRASE = 12;
 class SignedOutError extends Error {}
-const empty = () => ({ url: '', username: '', token: '', name: '', admin: false, grants: null, keyring: null });
+const empty = () => ({ url: '', username: '', token: '', name: '', admin: false, grants: null, keyring: null, recoveryKey: '', serverVersion: 1 });
+const FULL_GRANTS = { secrets: true, settings: true, history: false, dictionary: 'Personal' };
 
-// The account this device belongs to. A Windows desktop creates the account or signs in with the username and
-// passphrase, which makes it an admin device that can pair others. Any device can instead be paired with a
-// one-time code from an admin device. The token, grants and the group keys this device was given are kept here,
-// encrypted for the OS user; the passphrase itself is never stored.
+// The sync account this device belongs to. Devices are linked peers: "Turn on sync" creates an account named by a
+// random id and protected by a generated recovery key (see vault.newRecoveryKey); any linked device can then link
+// another with a one-time code, or remove one. Accounts made before this, with an email and passphrase, keep working.
+// The token and keyring are kept here, encrypted for the OS user. The recovery key is kept too, so it can be shown
+// again; a passphrase is never stored.
 class Account {
   constructor({ file, crypto, onChange = () => {}, fetchImpl = fetch, hostname = os.hostname }) {
     Object.assign(this, { file, crypto, onChange, fetchImpl, hostname });
@@ -18,8 +20,12 @@ class Account {
   }
   status() {
     const { url, username, token, name, admin, grants } = this.state;
-    return { signedIn: !!token, url, username: token ? username : '', name, admin, grants, hasKeys: !!this.state.keyring?.secrets, message: this.message };
+    const recovery = vault.isRecoveryUsername(username);
+    return { signedIn: !!token, url, username: token && !recovery ? username : '', kind: recovery ? 'linked' : 'legacy', name, admin, grants,
+      hasKeys: !!this.state.keyring?.secrets, hasRecoveryKey: !!this.state.recoveryKey, canManage: !!token && this.canManage(), message: this.message };
   }
+  // Servers before version 2 only let devices signed in with the passphrase manage others.
+  canManage() { return this.state.admin || this.state.serverVersion >= 2; }
   session() { return this.state.token ? { url: this.state.url, token: this.state.token } : null; }
   keyFor(group) { const key = this.state.keyring?.[group]; return key ? Buffer.from(key, 'base64') : null; }
   async load() {
@@ -56,19 +62,41 @@ class Account {
   }
   // The server no longer knows this device: removed from another device, or its passphrase was changed.
   dropped() {
-    const again = this.state.admin ? 'Sign in again' : 'Pair it again from your desktop';
-    return this.save({ ...empty(), url: this.state.url }, `This device was signed out. ${again} to keep syncing.`);
+    return this.save({ ...empty(), url: this.state.url }, 'This device was removed from sync. Link it again from another device to keep syncing.');
   }
 
-  async createAccount(url, username, passphrase) {
+  // Creates a new account for this device and returns its recovery key, which the user should keep somewhere safe.
+  async turnOn(url) {
     const origin = validateUrl(url);
-    const name = vault.normalizeUsername(username);
-    if (vault.normalizePassphrase(String(passphrase ?? '')).length < MIN_PASSPHRASE) throw new Error(`Choose a passphrase of at least ${MIN_PASSPHRASE} characters. It protects your API keys.`);
-    const { authKey, wrapKey } = await vault.deriveAccount(name, passphrase);
+    const recoveryKey = vault.newRecoveryKey();
+    const { username, secret } = vault.parseRecoveryKey(recoveryKey);
+    const { authKey, wrapKey } = await vault.deriveAccount(username, secret);
     const keyring = vault.newKeyring();
-    const reply = await this.post(origin, '/account/create', { username: name, authKey, keyring: vault.sealKeyring(wrapKey, keyring), deviceName: this.hostname() });
-    return this.save({ url: origin, username: reply.username, token: reply.token, name: this.hostname(), admin: true, grants: reply.grants, keyring });
+    const reply = await this.post(origin, '/account/create', { username, authKey, keyring: vault.sealKeyring(wrapKey, keyring), deviceName: this.hostname() });
+    await this.save({ ...empty(), url: origin, username: reply.username, token: reply.token, name: this.hostname(), admin: true, grants: reply.grants, keyring, recoveryKey });
+    await this.refresh().catch(() => {});
+    return recoveryKey;
   }
+  // Joins an account again with its recovery key, when no linked device is at hand.
+  async recover(url, recoveryKey) {
+    const { username, secret, key } = vault.parseRecoveryKey(recoveryKey);
+    await this.signIn(url, username, secret);
+    await this.save({ ...this.state, recoveryKey: key });
+    return this.status();
+  }
+  // Replaces the recovery key. Needs the current one, which this device keeps if it created or recovered the account.
+  async newRecoveryKey() {
+    if (!this.state.recoveryKey) throw new Error('This device does not have the current recovery key. Use the device that turned sync on.');
+    const current = vault.parseRecoveryKey(this.state.recoveryKey);
+    const recoveryKey = vault.newRecoveryKey(current.id);
+    const { secret } = vault.parseRecoveryKey(recoveryKey);
+    const [{ authKey: currentAuthKey }, { authKey, wrapKey }] = await Promise.all([vault.deriveAccount(current.username, current.secret), vault.deriveAccount(current.username, secret)]);
+    await this.request('/account/passphrase', { currentAuthKey, authKey, keyring: vault.sealKeyring(wrapKey, this.state.keyring) });
+    await this.save({ ...this.state, recoveryKey }, this.message);
+    return recoveryKey;
+  }
+  recoveryKey() { return this.state.recoveryKey || null; }
+
   async signIn(url, username, passphrase) {
     const origin = validateUrl(url);
     const name = vault.normalizeUsername(username);
@@ -77,7 +105,9 @@ class Account {
     let keyring;
     try { keyring = vault.openKeyring(wrapKey, reply.keyring); }
     catch (error) { await this.post(origin, '/account/sign-out', {}, reply.token).catch(() => {}); throw error; }
-    return this.save({ url: origin, username: reply.username, token: reply.token, name: this.hostname(), admin: true, grants: reply.grants, keyring });
+    await this.save({ ...empty(), url: origin, username: reply.username, token: reply.token, name: this.hostname(), admin: true, grants: reply.grants, keyring });
+    await this.refresh().catch(() => {});
+    return this.status();
   }
   async pair(url, code) {
     const origin = validateUrl(url);
@@ -86,7 +116,9 @@ class Account {
     let payload;
     try { payload = JSON.parse(vault.open(key, 'pairing', reply.payload)); }
     catch { await this.post(origin, '/account/sign-out', {}, reply.token).catch(() => {}); throw new Error('That pairing code did not match. Make a new one on your desktop.'); }
-    return this.save({ url: origin, username: reply.username, token: reply.token, name: reply.name, admin: false, grants: reply.grants, keyring: payload.keyring ?? null });
+    await this.save({ ...empty(), url: origin, username: reply.username, token: reply.token, name: reply.name, admin: false, grants: reply.grants, keyring: payload.keyring ?? null });
+    await this.refresh().catch(() => {});
+    return this.status();
   }
   async signOut() {
     const session = this.session();
@@ -98,41 +130,29 @@ class Account {
   async refresh() {
     if (!this.session()) return this.status();
     const me = await this.request('/account/me');
-    const changed = JSON.stringify([me.grants, me.admin, me.name]) !== JSON.stringify([this.state.grants, this.state.admin, this.state.name]);
-    return changed ? this.save({ ...this.state, grants: me.grants, admin: me.admin, name: me.name }, this.message) : this.status();
+    const serverVersion = Number(me.version) || 1;
+    const changed = JSON.stringify([me.grants, me.admin, me.name, serverVersion]) !== JSON.stringify([this.state.grants, this.state.admin, this.state.name, this.state.serverVersion]);
+    return changed ? this.save({ ...this.state, grants: me.grants, admin: me.admin, name: me.name, serverVersion }, this.message) : this.status();
   }
   noteGrants(grants) {
     if (grants && JSON.stringify(grants) !== JSON.stringify(this.state.grants)) return this.save({ ...this.state, grants }, this.message);
   }
 
-  // --- managing devices (admin devices only) ---
-  requireAdmin() { if (!this.state.admin) throw new Error('Only a desktop signed in with the passphrase can manage devices.'); }
-  listDevices() { this.requireAdmin(); return this.request('/devices/list'); }
-  // Makes a one-time code. Only the keys for granted groups go into the sealed payload, so a device without
-  // API keys can never decrypt them.
-  async addDevice({ name, grants }) {
-    this.requireAdmin();
+  // --- linked devices ---
+  requireManage() { if (!this.canManage()) throw new Error('Update the sync server to manage devices from here, or use the desktop that turned sync on.'); }
+  listDevices() { this.requireManage(); return this.request('/devices/list'); }
+  // Makes a one-time code for a new device. It gets everything this device has: the keyring (when this device holds
+  // the API-key key), shared settings and this device's dictionary list.
+  async linkDevice(name = 'New device') {
+    this.requireManage();
     const code = vault.generatePairCode();
     const { pairId, key } = await vault.derivePairing(code);
-    const keyring = grants.secrets ? { v: 1, secrets: this.state.keyring.secrets } : null;
-    const payload = vault.seal(key, 'pairing', JSON.stringify({ v: 1, keyring }));
+    const hasKeys = !!this.state.keyring?.secrets;
+    const grants = { ...FULL_GRANTS, secrets: hasKeys, dictionary: this.state.grants?.dictionary ?? FULL_GRANTS.dictionary };
+    const payload = vault.seal(key, 'pairing', JSON.stringify({ v: 1, keyring: hasKeys ? this.state.keyring : null }));
     const { expiresAt } = await this.request('/devices/pair', { name, grants, pairId, payload });
     return { code, expiresAt };
   }
-  async updateDevice(id, changes) {
-    this.requireAdmin();
-    await this.request('/devices/update', { id, ...changes });
-    return this.refresh();
-  }
-  removeDevice(id) { this.requireAdmin(); return this.request('/devices/remove', { id }); }
-  async changePassphrase(passphrase) {
-    this.requireAdmin();
-    if (vault.normalizePassphrase(String(passphrase ?? '')).length < MIN_PASSPHRASE) throw new Error(`Choose a passphrase of at least ${MIN_PASSPHRASE} characters.`);
-    const { authKey, wrapKey } = await vault.deriveAccount(this.state.username, passphrase);
-    await this.request('/account/passphrase', { authKey, keyring: vault.sealKeyring(wrapKey, this.state.keyring) });
-    this.message = 'Passphrase changed. Other desktops signed in with the old one were signed out.';
-    this.onChange(this.status());
-    return this.status();
-  }
+  removeDevice(id) { this.requireManage(); return this.request('/devices/remove', { id }); }
 }
 module.exports = { Account, SignedOutError, MIN_PASSPHRASE };

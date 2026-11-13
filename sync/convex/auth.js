@@ -1,7 +1,7 @@
 import { internalMutationGeneric as internalMutation } from 'convex/server';
 import { v } from 'convex/values';
 import { grants } from './schema.js';
-import { ALL_GRANTS, MAX_DEVICES, MAX_FAILURES_PER_HOUR, PAIRING_TTL_MS } from './authCore.js';
+import { ALL_GRANTS, MAX_DEVICES, MAX_FAILURES_PER_HOUR, PAIRING_TTL_MS, SERVER_VERSION } from './authCore.js';
 import { deviceFor } from './deviceCore.js';
 
 const HOUR = 60 * 60 * 1000;
@@ -20,10 +20,6 @@ async function addDevice(ctx, userId, fields) {
 async function adminGrants(ctx, userId) {
   const admin = (await devicesOf(ctx, userId)).filter(device => device.admin).sort((a, b) => b.lastSeen - a.lastSeen)[0];
   return admin ? { ...ALL_GRANTS, dictionary: admin.grants.dictionary } : ALL_GRANTS;
-}
-async function adminFor(ctx, tokenHash) {
-  const device = await deviceFor(ctx, tokenHash);
-  return device?.admin ? device : null;
 }
 const publicDevice = (device, current) => ({
   id: device._id, name: device.name, admin: device.admin, hasKeys: device.hasKeys, grants: device.grants,
@@ -71,19 +67,24 @@ export const me = internalMutation({
     const device = await deviceFor(ctx, tokenHash);
     if (!device) return null;
     const user = await ctx.db.get(device.userId);
-    return { email: user.email, name: device.name, admin: device.admin, hasKeys: device.hasKeys, grants: device.grants };
+    return { email: user.email, name: device.name, admin: device.admin, hasKeys: device.hasKeys, grants: device.grants, version: SERVER_VERSION };
   }
 });
 
-// The new passphrase re-wraps the same group keys, so paired devices keep working. Other admin devices are signed
-// out, since they were signed in with the old passphrase.
+// The new recovery key or passphrase re-wraps the same group keys, so every device keeps working and stays signed in.
+// The current one must be proven first; wrong guesses count against the same hourly limit as sign-in. Failures are
+// returned rather than thrown, since a throw would roll back the recorded failure.
 export const changePassphrase = internalMutation({
-  args: { tokenHash: v.string(), authHash: v.string(), keyring: v.string() },
-  handler: async (ctx, { tokenHash, authHash, keyring }) => {
-    const device = await adminFor(ctx, tokenHash);
+  args: { tokenHash: v.string(), currentAuthHash: v.string(), authHash: v.string(), keyring: v.string() },
+  handler: async (ctx, { tokenHash, currentAuthHash, authHash, keyring }) => {
+    const device = await deviceFor(ctx, tokenHash);
     if (!device) return null;
-    await ctx.db.patch(device.userId, { authHash, keyring });
-    for (const other of await devicesOf(ctx, device.userId)) if (other.admin && other._id !== device._id) await ctx.db.delete(other._id);
+    const user = await ctx.db.get(device.userId);
+    const now = Date.now();
+    const failures = await byEmail(ctx, 'signInFailures', user.email).collect();
+    if (failures.filter(failure => failure.at >= now - HOUR).length >= MAX_FAILURES_PER_HOUR) return { error: 'Too many wrong attempts. Try again in an hour.', status: 429 };
+    if (user.authHash !== currentAuthHash) { await ctx.db.insert('signInFailures', { email: user.email, at: now }); return { error: 'The current recovery key or passphrase is wrong.', status: 403 }; }
+    await ctx.db.patch(user._id, { authHash, keyring });
     return { ok: true };
   }
 });
@@ -91,7 +92,7 @@ export const changePassphrase = internalMutation({
 export const listDevices = internalMutation({
   args: { tokenHash: v.string() },
   handler: async (ctx, { tokenHash }) => {
-    const device = await adminFor(ctx, tokenHash);
+    const device = await deviceFor(ctx, tokenHash);
     if (!device) return null;
     const devices = await devicesOf(ctx, device.userId);
     const dictionaries = await ctx.db.query('dictionaries').withIndex('by_user', q => q.eq('userId', device.userId)).collect();
@@ -103,7 +104,7 @@ export const listDevices = internalMutation({
 export const createPairing = internalMutation({
   args: { tokenHash: v.string(), pairId: v.string(), name: v.string(), grants, payload: v.string() },
   handler: async (ctx, { tokenHash, pairId, name, grants: pairGrants, payload }) => {
-    const device = await adminFor(ctx, tokenHash);
+    const device = await deviceFor(ctx, tokenHash);
     if (!device) return null;
     const now = Date.now();
     const pending = await ctx.db.query('pairings').withIndex('by_user', q => q.eq('userId', device.userId)).collect();
@@ -115,7 +116,7 @@ export const createPairing = internalMutation({
   }
 });
 
-// One use only. The new device gets the name and grants chosen on the admin device.
+// One use only. The new device gets the name and grants chosen on the device that made the code.
 export const claimPairing = internalMutation({
   args: { pairId: v.string(), tokenHash: v.string() },
   handler: async (ctx, { pairId, tokenHash }) => {
@@ -132,7 +133,7 @@ export const claimPairing = internalMutation({
 export const updateDevice = internalMutation({
   args: { tokenHash: v.string(), deviceId: v.string(), name: v.optional(v.string()), grants },
   handler: async (ctx, { tokenHash, deviceId, name, grants: next }) => {
-    const device = await adminFor(ctx, tokenHash);
+    const device = await deviceFor(ctx, tokenHash);
     if (!device) return null;
     const target = (await devicesOf(ctx, device.userId)).find(entry => entry._id === deviceId);
     if (!target) throw new Error('That device is no longer on this account.');
@@ -145,11 +146,23 @@ export const updateDevice = internalMutation({
 export const removeDevice = internalMutation({
   args: { tokenHash: v.string(), deviceId: v.string() },
   handler: async (ctx, { tokenHash, deviceId }) => {
-    const device = await adminFor(ctx, tokenHash);
+    const device = await deviceFor(ctx, tokenHash);
     if (!device) return null;
     if (deviceId === device._id) throw new Error('Use Sign out to remove this device.');
     const target = (await devicesOf(ctx, device.userId)).find(entry => entry._id === deviceId);
     if (target) await ctx.db.delete(target._id);
     return { ok: true };
+  }
+});
+
+// Run hourly by crons.js: drops sign-in failures past the rate-limit window and pairing codes that expired unused.
+export const cleanupExpired = internalMutation({
+  args: {},
+  handler: async ctx => {
+    const now = Date.now();
+    const failures = await ctx.db.query('signInFailures').withIndex('by_at', q => q.lt('at', now - HOUR)).take(4000);
+    const pairings = await ctx.db.query('pairings').withIndex('by_expires', q => q.lte('expiresAt', now)).take(4000);
+    for (const row of [...failures, ...pairings]) await ctx.db.delete(row._id);
+    return { failures: failures.length, pairings: pairings.length };
   }
 });

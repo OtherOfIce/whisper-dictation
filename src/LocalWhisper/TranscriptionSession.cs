@@ -48,14 +48,8 @@ internal sealed class TranscriptionSession(HttpClient http, string key, SessionM
                     using (var writer = new WaveFileWriter(new NAudio.Utils.IgnoreDisposeStream(wav), new WaveFormat(16000, 16, 1)))
                         writer.Write(pcm, 0, pcm.Length);
                     (byte[] Bytes, string Format) encoded;
-                    using (metrics.Measure(prefix + "Compress audio"))
-                    {
-                        try { encoded = AudioEncoding.Compress(wav.ToArray()); }
-                        catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or InvalidOperationException)
-                        {
-                            using (metrics.Measure(prefix + "MP3 unavailable; using WAV")) encoded = (wav.ToArray(), "wav");
-                        }
-                    }
+                    using (metrics.Measure(prefix + "Compress audio")) encoded = AudioEncoding.CompressOrWav(wav.ToArray());
+                    if (encoded.Format == "wav") using (metrics.Measure(prefix + "MP3 unavailable; using WAV")) { }
                     token.ThrowIfCancellationRequested();
                     try
                     {

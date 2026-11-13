@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text.Json.Serialization;
 using NAudio.CoreAudioApi;
+using NAudio.CoreAudioApi.Interfaces;
 using NAudio.Wave;
 
 namespace LocalWhisper;
@@ -31,7 +32,27 @@ internal static class MicrophoneDevices
         return devices.ToArray();
     }
 
-    public static int Resolve(string selectedId) => string.IsNullOrEmpty(selectedId) ? -1 : Resolve(selectedId, Available());
+    // Enumeration is slow and runs on the keyboard hook's thread, so settings replies use this cached list.
+    // It is refreshed on request, when a microphone is resolved, and after Windows reports a capture device change.
+    private static MicrophoneDevice[]? cached;
+    public static MicrophoneDevice[] Cached => Volatile.Read(ref cached) ?? Refresh();
+    public static MicrophoneDevice[] Refresh() { var devices = Available(); Volatile.Write(ref cached, devices); return devices; }
+    public static int Resolve(string selectedId) => string.IsNullOrEmpty(selectedId) ? -1 : Resolve(selectedId, Refresh());
+    // Keep the returned object alive and dispose it at shutdown.
+    public static IDisposable Watch() => new Watcher();
+
+    private sealed class Watcher : IMMNotificationClient, IDisposable
+    {
+        private readonly MMDeviceEnumerator devices = new();
+        public Watcher() => devices.RegisterEndpointNotificationCallback(this);
+        public void Dispose() { try { devices.UnregisterEndpointNotificationCallback(this); } catch { } devices.Dispose(); }
+        private static void Invalidate() => Volatile.Write(ref cached, null);
+        public void OnDeviceStateChanged(string deviceId, DeviceState newState) => Invalidate();
+        public void OnDeviceAdded(string pwstrDeviceId) => Invalidate();
+        public void OnDeviceRemoved(string deviceId) => Invalidate();
+        public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId) { }
+        public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key) { }
+    }
 
     internal static int Resolve(string selectedId, IReadOnlyList<MicrophoneDevice> devices)
     {
