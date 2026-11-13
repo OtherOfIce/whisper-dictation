@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="../../shared/cleanup/luna-cleanup-prompt.txt" LogicalName="LunaCleanupPrompt" />
+    <EmbeddedResource Include="../../shared/cleanup/deepseek-cleanup-prompt.txt" LogicalName="DeepSeekCleanupPrompt" />
   </ItemGroup>
 
   <ItemGroup>

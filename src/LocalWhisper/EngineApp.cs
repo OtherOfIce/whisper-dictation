@@ -328,13 +328,15 @@ internal sealed class EngineApp : ApplicationContext
             correctionObservation?.Cancel(); correctionObservation?.Dispose(); correctionObservation = null;
             var effectiveCleanup = cleanupMode;
             if (!Pipeline().Available(transcriptionModel, dictionaryTerms)
-                || (effectiveCleanup != CleanupService.Off && string.IsNullOrWhiteSpace(apiKey)))
+                || (effectiveCleanup != CleanupService.Off && string.IsNullOrWhiteSpace(
+                    CleanupService.UsesGateway(effectiveCleanup) ? gatewayApiKey : apiKey)))
             { gesture.Reset(); Emit(new { type = "needsSettings" }); return; }
             target = Native.GetForegroundWindow(); cancelled = false; processingPhase = null;
             metrics = new SessionMetrics(); entryId = Guid.NewGuid().ToString("N");
             metrics.TranscriptionModel = transcriptionModel; metrics.RequestedTranscriptionModel = transcriptionModel; metrics.CleanupMode = effectiveCleanup;
             operation = new CancellationTokenSource();
             insertionContext = effectiveCleanup == CleanupService.Off ? null : TargetContext.CaptureAsync(target, operation.Token);
+            _ = CleanupService.WarmUpAsync(http, effectiveCleanup);
             recordingStage = metrics.Measure("Recording"); lastTick = Environment.TickCount64;
             try
             {
@@ -434,10 +436,14 @@ internal sealed class EngineApp : ApplicationContext
                 try
                 {
                     var context = capturedContext is null ? InsertionContext.Empty : await capturedContext;
-                    using (trace.Measure(cleanupMode == CleanupService.LunaFast ? "AI cleanup (Luna Fast)" : "AI cleanup (Luna)"))
+                    using (trace.Measure(cleanupMode switch
                     {
-                        var tier = cleanupMode == CleanupService.LunaFast ? CleanupServiceTier.Fast : CleanupServiceTier.Standard;
-                        var result = await new CleanupService(http, dictionaryTerms).CleanupAsync(rawText, context, apiKey, tier, cancellation.Token);
+                        CleanupService.LunaFast => "AI cleanup (Luna Fast)",
+                        CleanupService.DeepSeek => "AI cleanup (DeepSeek)",
+                        _ => "AI cleanup (Luna)"
+                    }))
+                    {
+                        var result = await CleanupAsync(rawText, context, trace, cancellation.Token);
                         text = result.Text; trace.Cost("cleanup", result.Model, result.Cost);
                     }
                 }
@@ -538,6 +544,25 @@ internal sealed class EngineApp : ApplicationContext
     // Retries and alternate transcripts are user-initiated and run outside dictation, but must not hang forever.
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(3);
     private TranscriptionPipeline Pipeline() => new(http, new(apiKey, xaiApiKey, gatewayApiKey));
+    // DeepSeek runs through the Vercel gateway. If it fails, times out, or returns unusable text,
+    // Luna Fast retries the same cleanup when an OpenRouter key is available.
+    private async Task<CleanupResult> CleanupAsync(string rawText, InsertionContext context, SessionMetrics trace, CancellationToken cancellation)
+    {
+        var service = new CleanupService(http, dictionaryTerms);
+        if (cleanupMode != CleanupService.DeepSeek)
+            return await service.CleanupAsync(rawText, context, apiKey,
+                cleanupMode == CleanupService.LunaFast ? CleanupServiceTier.Fast : CleanupServiceTier.Standard, cancellation);
+        try
+        {
+            return await service.CleanupAsync(rawText, context, gatewayApiKey, CleanupServiceTier.Standard,
+                CleanupService.DeepSeekProfile(rawText), cancellation);
+        }
+        catch (Exception ex) when (!cancellation.IsCancellationRequested && !string.IsNullOrWhiteSpace(apiKey))
+        {
+            trace.Fallback(CleanupService.DeepSeekModel, ex.Message);
+            return await service.CleanupAsync(rawText, context, apiKey, CleanupServiceTier.Fast, cancellation);
+        }
+    }
     private ModelTranscription CreateModelTranscription(SessionMetrics trace, IReadOnlyList<string> dictionary, bool doubleTranscription = false) => Pipeline().Recorded(trace, dictionary, doubleTranscription);
     private static string ModelLabel(string model) => TranscriptionModels.Describe(model).Label;
     private async Task<object> TranscribeFileAsync(string path, string format, string model, bool useFallback)

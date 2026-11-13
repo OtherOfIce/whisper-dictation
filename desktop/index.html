@@ -237,6 +237,7 @@
                 <option value="off">Off</option>
                 <option value="luna">Luna 6</option>
                 <option value="luna-fast">Luna 6 Fast</option>
+                <option value="deepseek">DeepSeek V4.1 Flash Fast</option>
               </select>
             </div>
           </div>
@@ -259,7 +260,7 @@
           <div class="group">
             <div class="key-row" data-key="apiKey">
               <div class="key-head"><h3>OpenRouter</h3><span id="key-status" class="status-pill"></span></div>
-              <p class="muted">Needed for GPT, MAI and Luna cleanup. Also used to show your balance.</p>
+              <p class="muted">Needed for GPT, MAI and Luna cleanup, and for the Luna fallback when DeepSeek cleanup fails. Also used to show your balance.</p>
               <div class="key-input"><input id="api-key" type="password" autocomplete="off" placeholder="sk-or-…" aria-label="OpenRouter API key"><button class="secondary-button" data-save-key="apiKey" type="button">Save</button></div>
             </div>
             <div class="key-row" data-key="xaiApiKey">
@@ -269,7 +270,7 @@
             </div>
             <div class="key-row" data-key="gatewayApiKey">
               <div class="key-head"><h3>Vercel AI Gateway</h3><span id="gateway-key-status" class="status-pill"></span></div>
-              <p class="muted">Only needed for MAI streaming.</p>
+              <p class="muted">Needed for MAI streaming and DeepSeek cleanup.</p>
               <div class="key-input"><input id="gateway-api-key" type="password" autocomplete="off" placeholder="vck_…" aria-label="Vercel AI Gateway API key"><button class="secondary-button" data-save-key="gatewayApiKey" type="button">Save</button></div>
             </div>
           </div>
@@ -357,6 +358,7 @@
             <p class="small muted"><strong>MAI-Transcribe-2</strong> runs on Azure fast transcription, which Microsoft says does not retain audio or transcripts. <a href="https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/speech-service/speech-to-text/data-privacy-security" target="_blank" rel="noreferrer">Microsoft Speech policy</a>.</p>
             <p class="small muted"><strong>Luna cleanup.</strong> OpenAI's text API may keep content up to 30 days for abuse monitoring. Review logging and zero data retention in <a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noreferrer">OpenRouter privacy settings</a>.</p>
             <p class="small muted">Policies checked 3 October 2026.</p>
+            <p class="small muted"><strong>DeepSeek cleanup</strong> runs through Vercel AI Gateway on DeepSeek's fast route. Review data retention in <a href="https://vercel.com/docs/ai-gateway" target="_blank" rel="noreferrer">Vercel AI Gateway documentation</a>.</p>
           </details>
         </section>
 

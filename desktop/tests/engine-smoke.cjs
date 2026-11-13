@@ -14,7 +14,7 @@ createInterface({ input: child.stdout }).on('line', line => {
       assert.equal(typeof event.result.hasGatewayKey, 'boolean'); assert(!('gatewayApiKey' in event.result));
       assert(event.result.models.some(model => model.id === 'mai-transcribe-2-streaming' && model.credential === 'gateway'));
       assert(event.result.models.some(model => model.id === event.result.transcriptionModel));
-      assert(['off', 'luna', 'luna-fast'].includes(event.result.cleanupMode));
+      assert(['off', 'luna', 'luna-fast', 'deepseek'].includes(event.result.cleanupMode));
       assert.equal(typeof event.result.lockMode, 'boolean');
       assert(Number.isInteger(event.result.shortcut.modifiers)); assert(Number.isInteger(event.result.shortcut.key));
       assert.equal(typeof event.result.microphoneDeviceId, 'string');

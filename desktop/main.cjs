@@ -462,7 +462,7 @@ else {
         if (params?.microphoneDeviceId != null && (typeof params.microphoneDeviceId !== 'string' || params.microphoneDeviceId.length > 2048)) throw new Error('Invalid microphone selection.');
         if (!params || typeof params.liveChunks !== 'boolean' || typeof params.doubleTranscription !== 'boolean' || typeof params.lockMode !== 'boolean' || typeof params.autoLearn !== 'boolean' || ['apiKey', 'xaiApiKey', 'gatewayApiKey'].some(name => params[name] != null && (typeof params[name] !== 'string' || params[name].length > 1024))) throw new Error('Invalid settings.');
         modelDefinition(settings, params.transcriptionModel);
-        if (!['off', 'luna', 'luna-fast'].includes(params.cleanupMode)) throw new Error('Invalid cleanup mode.');
+        if (!['off', 'luna', 'luna-fast', 'deepseek'].includes(params.cleanupMode)) throw new Error('Invalid cleanup mode.');
         validateDictionaryTerms(params.dictionaryTerms);
         validateModelDictionary(settings, params.transcriptionModel, params.dictionaryTerms);
         settings = testMode ? { ...settings, hasKey: settings.hasKey || !!params.apiKey, pauseMedia: params.pauseMedia !== false, hasXaiKey: settings.hasXaiKey || !!params.xaiApiKey, hasGatewayKey: settings.hasGatewayKey || !!params.gatewayApiKey, liveChunks: params.liveChunks, doubleTranscription: params.doubleTranscription, lockMode: params.lockMode, autoLearn: params.autoLearn, transcriptionModel: params.transcriptionModel, cleanupMode: params.cleanupMode, shortcut: params.shortcut ?? settings.shortcut, microphoneDeviceId: params.microphoneDeviceId ?? settings.microphoneDeviceId ?? '', dictionaryTerms: params.dictionaryTerms } : await send('saveSettings', params);
