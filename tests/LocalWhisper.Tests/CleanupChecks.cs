@@ -96,6 +96,54 @@ internal static class CleanupChecks
             check(result.Model == "openai/gpt-oss-120b", "Cleanup reports the selected evaluation model");
         }
 
+        using (var deepSeekHttp = new HttpClient(new Handler(async (request, cancellation) =>
+        {
+            check(request.RequestUri!.ToString() == "https://ai-gateway.vercel.sh/v1/chat/completions", "DeepSeek cleanup uses the Vercel gateway");
+            check(request.Headers.Authorization?.Parameter == "gateway-only", "DeepSeek cleanup sends the gateway key");
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellation));
+            var root = body.RootElement;
+            check(root.GetProperty("model").GetString() == CleanupService.DeepSeekModel, "DeepSeek cleanup uses the fast DeepSeek route");
+            check(root.GetProperty("reasoning_effort").GetString() == "none", "DeepSeek cleanup disables reasoning");
+            check(!root.TryGetProperty("service_tier", out _) && !root.TryGetProperty("provider", out _), "DeepSeek cleanup omits OpenRouter-only fields");
+            check(root.GetProperty("messages")[0].GetProperty("content").GetString() == CleanupService.DeepSeekPrompt,
+                "DeepSeek cleanup sends its own prompt");
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"choices\":[{\"message\":{\"content\":\"Hello.\"}}]}")
+            };
+        })))
+        {
+            check(await new CleanupService(deepSeekHttp).CleanAsync("um hello", "gateway-only", CleanupService.DeepSeek, default) == "Hello.",
+                "DeepSeek cleanup returns the cleaned text");
+        }
+        check(CleanupService.IsMode(CleanupService.DeepSeek) && CleanupService.UsesGateway(CleanupService.DeepSeek)
+            && !CleanupService.UsesGateway(CleanupService.LunaFast), "DeepSeek is a gateway cleanup mode");
+        check(CleanupService.DeepSeekPrompt.StartsWith("Role", StringComparison.Ordinal) && CleanupService.DeepSeekPrompt != CleanupService.Prompt,
+            "DeepSeek loads its own prompt file");
+        var warmUps = new List<HttpRequestMessage>();
+        using (var warmHttp = new HttpClient(new Handler((request, _) =>
+        {
+            warmUps.Add(request);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.MethodNotAllowed));
+        })))
+        {
+            await CleanupService.WarmUpAsync(warmHttp, CleanupService.DeepSeek);
+            await CleanupService.WarmUpAsync(warmHttp, CleanupService.LunaFast);
+            await CleanupService.WarmUpAsync(warmHttp, CleanupService.Off);
+            check(warmUps.Count == 2 && warmUps.All(r => r.Method == HttpMethod.Head && r.Headers.Authorization is null)
+                && warmUps[0].RequestUri!.Host == "ai-gateway.vercel.sh" && warmUps[1].RequestUri!.Host == "openrouter.ai",
+                "Cleanup warm-up sends one keyless HEAD to the mode's gateway and none when cleanup is off");
+        }
+        using (var failingWarmHttp = new HttpClient(new Handler((_, _) => throw new HttpRequestException("offline"))))
+        {
+            await CleanupService.WarmUpAsync(failingWarmHttp, CleanupService.DeepSeek);
+            check(true, "Cleanup warm-up ignores connection failures");
+        }
+        check(CleanupService.DeepSeekProfile("short").Timeout < TimeSpan.FromSeconds(3)
+            && CleanupService.DeepSeekProfile(new string('a', 4000)).Timeout > TimeSpan.FromSeconds(10)
+            && CleanupService.DeepSeekProfile(new string('a', 100000)).Timeout == CleanupService.DefaultTimeout,
+            "DeepSeek timeout grows with dictation length and stays bounded");
+
         foreach (var tier in new[] { CleanupServiceTier.Standard, CleanupServiceTier.Fast })
         {
             using var http = new HttpClient(new Handler(async (request, cancellation) =>

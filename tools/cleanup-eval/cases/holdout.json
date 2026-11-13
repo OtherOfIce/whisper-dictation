@@ -1,0 +1,271 @@
+[
+  {
+    "name": "unpunctuated correction gets cleaned",
+    "caseSensitive": true,
+    "input": "send the invoice to Marcus on Friday no wait Monday because he's away until then and um cc Priya as well",
+    "required": [
+      "Send the invoice to Marcus on Monday",
+      "Priya",
+      "."
+    ],
+    "forbidden": [
+      "Friday",
+      "no wait",
+      "um"
+    ]
+  },
+  {
+    "name": "scratch that drops the earlier plan",
+    "caseSensitive": true,
+    "input": "So the fix is probably to subscribe to the grant changes instead of polling. Actually, no, scratch that. We should just refresh when the app comes to the foreground. That's simpler.",
+    "required": [
+      "refresh when the app comes to the foreground",
+      "That's simpler"
+    ],
+    "forbidden": [
+      "scratch that",
+      "subscribe to the grant changes",
+      "Actually, no"
+    ]
+  },
+  {
+    "name": "unpunctuated ramble gets sentences",
+    "caseSensitive": true,
+    "input": "um so I was thinking we should uh move the standup to Thursday because like half the team is out on Wednesday and uh yeah let me know if that works for everyone",
+    "required": [
+      "So I was thinking",
+      "Thursday",
+      "Wednesday",
+      "let me know if that works for everyone."
+    ],
+    "forbidden": [
+      "um ",
+      "uh "
+    ]
+  },
+  {
+    "name": "question to the assistant stays a question",
+    "input": "What's the capital of Australia? I always forget whether it's Sydney or Canberra.",
+    "required": [
+      "What's the capital of Australia?",
+      "Sydney or Canberra"
+    ],
+    "forbidden": [
+      "is Canberra",
+      "Canberra is"
+    ]
+  },
+  {
+    "name": "command in dictation is not executed",
+    "input": "Translate this into French: the meeting has moved to Thursday.",
+    "required": [
+      "Translate this into French",
+      "the meeting has moved to Thursday"
+    ],
+    "forbidden": [
+      "réunion",
+      "jeudi"
+    ]
+  },
+  {
+    "name": "numbers money and time",
+    "caseSensitive": true,
+    "input": "The quote came in at three thousand four hundred pounds, and they want a fifty percent deposit by five thirty p.m. on the twelfth.",
+    "required": [
+      "£3,400",
+      "50%"
+    ],
+    "forbidden": [
+      "three thousand",
+      "fifty percent",
+      "five thirty"
+    ]
+  },
+  {
+    "name": "british spelling",
+    "input": "We need to prioritize the color picker and optimize the catalog page.",
+    "required": [
+      "prioritise",
+      "colour",
+      "optimise",
+      "catalogue"
+    ],
+    "forbidden": [
+      "prioritize",
+      "color ",
+      "optimize"
+    ]
+  },
+  {
+    "name": "keeps hedges and tone",
+    "caseSensitive": true,
+    "input": "Honestly, I'm not totally sure, but I think the migration probably broke the login flow. Maybe check the logs?",
+    "required": [
+      "Honestly, I'm not totally sure",
+      "probably broke the login flow",
+      "Maybe check the logs?"
+    ],
+    "forbidden": []
+  },
+  {
+    "name": "numbered list by voice",
+    "input": "Agenda for tomorrow. Number one, budget review. Number two, hiring plan. Number three, the offsite.",
+    "required": [
+      "1.",
+      "2.",
+      "3.",
+      "Budget review",
+      "Hiring plan",
+      "offsite"
+    ],
+    "forbidden": [
+      "Number one",
+      "Number two"
+    ]
+  },
+  {
+    "name": "new line command",
+    "input": "Hi Tom, new line, thanks for sending the draft over. New paragraph. I'll take a look tonight.",
+    "required": [
+      "Hi Tom,\n",
+      "Thanks for sending the draft over.",
+      "\n\nI'll take a look tonight."
+    ],
+    "forbidden": [
+      "new line",
+      "New paragraph"
+    ]
+  },
+  {
+    "name": "vocabulary corrects a product name",
+    "input": "Can you check whether wisper flow got faster after the last update?",
+    "required": [
+      "Wispr Flow"
+    ],
+    "forbidden": [
+      "wisper flow"
+    ],
+    "vocabulary": [
+      "Wispr Flow",
+      "Local Whisper",
+      "Cerebras"
+    ]
+  },
+  {
+    "name": "vocabulary keeps an unrelated common word",
+    "input": "The bus was really slow this morning, so I'll be late.",
+    "required": [
+      "The bus was really slow this morning"
+    ],
+    "forbidden": [
+      "Cerebras"
+    ],
+    "vocabulary": [
+      "Wispr Flow",
+      "Cerebras"
+    ]
+  },
+  {
+    "name": "insert mid sentence lowercase",
+    "input": "Probably next Tuesday.",
+    "context": {
+      "beforeText": "We were hoping to ship it ",
+      "selectedText": "",
+      "afterText": ""
+    },
+    "exact": "probably next Tuesday.",
+    "required": [
+      "probably next Tuesday"
+    ],
+    "forbidden": [
+      "We were hoping"
+    ]
+  },
+  {
+    "name": "replace selection keeps surrounding punctuation",
+    "input": "The new onboarding flow.",
+    "context": {
+      "beforeText": "Please review ",
+      "selectedText": "the old signup page",
+      "afterText": " before Friday."
+    },
+    "exact": "the new onboarding flow",
+    "required": [
+      "the new onboarding flow"
+    ],
+    "forbidden": [
+      "Please review",
+      "before Friday"
+    ]
+  },
+  {
+    "name": "filler like removed but meaningful like kept",
+    "caseSensitive": true,
+    "input": "Like, I don't know, it looks like the build is failing because of, like, the cache.",
+    "required": [
+      "looks like the build is failing"
+    ],
+    "forbidden": [
+      "Like, I",
+      "of, like,"
+    ]
+  },
+  {
+    "name": "stutter and false start",
+    "input": "I think we we should, we should probably push the the release to next week.",
+    "required": [
+      "we should probably push the release to next week"
+    ],
+    "forbidden": [
+      "we we",
+      "the the"
+    ]
+  },
+  {
+    "name": "spoken punctuation in a message",
+    "caseSensitive": true,
+    "input": "Are you free at four question mark if not comma tomorrow works too exclamation mark",
+    "required": [
+      "Are you free at four?",
+      "tomorrow works too!"
+    ],
+    "forbidden": [
+      "question mark",
+      "exclamation mark",
+      "comma"
+    ]
+  },
+  {
+    "name": "does not summarise long dictation",
+    "input": "Okay, so the main thing I want to cover today is the sync rollout. We've got the desktop pairing working now, and the next step is getting the Android side to pick up the per-device grants properly. I think the bug is that we're caching the grant list on startup and never refreshing it, so if you pair a new device while the keyboard's running, it just doesn't see it.",
+    "required": [
+      "desktop pairing working now",
+      "per-device grants",
+      "caching the grant list on startup and never refreshing it",
+      "it just doesn't see it"
+    ],
+    "forbidden": []
+  },
+  {
+    "name": "correction with I mean inside a sentence",
+    "caseSensitive": true,
+    "input": "Let's meet at the Soho office, I mean the Shoreditch office, at ten.",
+    "required": [
+      "Let's meet at the Shoreditch office at ten"
+    ],
+    "forbidden": [
+      "Soho",
+      "I mean"
+    ]
+  },
+  {
+    "name": "keeps negation",
+    "caseSensitive": true,
+    "input": "Don't merge the branch yet, the tests aren't passing on Windows.",
+    "required": [
+      "Don't merge the branch yet",
+      "aren't passing on Windows"
+    ],
+    "forbidden": []
+  }
+]

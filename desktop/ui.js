@@ -86,7 +86,8 @@ const modelNames = {
   'google/gemini-3.8-flash': 'Gemini 3.8 Flash', 'openai/gpt-5.6-luna': 'Luna 5.6', 'openai/gpt-6-luna': 'Luna 6',
   'gpt-transcribe': 'GPT-Transcribe', 'mai-transcribe-2-verbatim': 'MAI-Transcribe-2 · Verbatim', 'mai-transcribe-2-clean': 'MAI-Transcribe-2 · Clean',
   'gemini-3.8-flash': 'Gemini 3.8 Flash · Priority', 'grok-voice-transcribe-2.0': 'Grok Voice Transcribe 2.0',
-  'grok-voice-transcribe-2-streaming': 'Grok Voice Transcribe 2.0 · Streaming', luna: 'Luna 6', 'luna-fast': 'Luna 6 Fast'
+  'grok-voice-transcribe-2-streaming': 'Grok Voice Transcribe 2.0 · Streaming', luna: 'Luna 6', 'luna-fast': 'Luna 6 Fast',
+  deepseek: 'DeepSeek V4.1 Flash Fast', 'deepseek/deepseek-v4.1-flash-fast': 'DeepSeek V4.1 Flash Fast'
 };
 // Which models made a transcript. Entries recorded before model tracking have no facts.
 function pipelineFacts(metrics) {

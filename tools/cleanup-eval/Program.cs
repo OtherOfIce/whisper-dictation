@@ -3,9 +3,11 @@ using System.Text.Json;
 using LocalWhisper;
 
 var outputPath = Argument(args, "--output");
-var model = Argument(args, "--model") ?? CleanupService.Model;
+// --cleanup-mode deepseek evaluates the production DeepSeek profile: Vercel gateway, model and shipped prompt.
+var deepSeekMode = Argument(args, "--cleanup-mode") == CleanupService.DeepSeek;
+var model = deepSeekMode ? CleanupService.DeepSeekModel : Argument(args, "--model") ?? CleanupService.Model;
 var provider = Argument(args, "--provider");
-var reasoningEffort = Argument(args, "--reasoning-effort") ?? (model == CleanupService.Model ? "none" : "low");
+var reasoningEffort = Argument(args, "--reasoning-effort") ?? (model == CleanupService.Model || deepSeekMode ? "none" : "low");
 var minimumCompletionTokens = IntArgument(args, "--minimum-completion-tokens") ?? 0;
 var promptSetPath = Argument(args, "--prompt-set");
 var promptId = Argument(args, "--prompt-id");
@@ -14,17 +16,20 @@ if ((promptSetPath is null) != (promptId is null))
     Console.Error.WriteLine("Pass --prompt-set and --prompt-id together.");
     return 2;
 }
-var selectedPrompt = promptSetPath is null ? CleanupService.Prompt : LoadPrompt(promptSetPath, promptId!);
+var selectedPrompt = promptSetPath is not null ? LoadPrompt(promptSetPath, promptId!)
+    : deepSeekMode ? CleanupService.DeepSeekPrompt : CleanupService.Prompt;
 var tierOption = (Argument(args, "--tier") ?? "standard").ToLowerInvariant();
 if (tierOption is not ("standard" or "fast" or "both"))
 {
     Console.Error.WriteLine("--tier must be standard, fast, or both.");
     return 2;
 }
-var key = Settings.LoadKey();
+var key = deepSeekMode ? Settings.LoadGatewayKey() : Settings.LoadKey();
 if (string.IsNullOrWhiteSpace(key))
 {
-    Console.Error.WriteLine("No saved OpenRouter key was found. Add one in Local Whisper Settings or set OPENROUTER_API_KEY.");
+    Console.Error.WriteLine(deepSeekMode
+        ? "No saved Vercel AI Gateway key was found. Add one in Local Whisper Settings or set AI_GATEWAY_API_KEY."
+        : "No saved OpenRouter key was found. Add one in Local Whisper Settings or set OPENROUTER_API_KEY.");
     return 2;
 }
 
@@ -153,6 +158,11 @@ var cases = new[]
         ["productions"])
 };
 
+var casesPath = Argument(args, "--cases");
+if (casesPath is not null)
+    cases = JsonSerializer.Deserialize<EvalCase[]>(File.ReadAllBytes(casesPath), new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+        ?? throw new InvalidDataException($"No cases were found in {Path.GetFullPath(casesPath)}.");
+
 var caseFilter = Argument(args, "--case");
 if (caseFilter is not null)
 {
@@ -165,7 +175,8 @@ cases = Enumerable.Range(0, repeat).SelectMany(_ => cases).ToArray();
 
 using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
 var profile = new CleanupRequestProfile(model, reasoningEffort, provider, SendServiceTier: model == CleanupService.Model,
-    MinimumCompletionTokens: minimumCompletionTokens, Prompt: selectedPrompt);
+    MinimumCompletionTokens: minimumCompletionTokens, Prompt: selectedPrompt,
+    Gateway: deepSeekMode ? CleanupGateway.Vercel : CleanupGateway.OpenRouter);
 var runs = new List<EvalRun>();
 
 var tiers = tierOption switch
@@ -237,8 +248,9 @@ return runs.Any(run => run.Error is not null || run.ChecksPassed != run.ChecksTo
 
 static (int Passed, int Total) Score(EvalCase evalCase, string output)
 {
-    var required = evalCase.Required.Count(value => output.Contains(value, StringComparison.OrdinalIgnoreCase));
-    var forbidden = evalCase.Forbidden.Count(value => !output.Contains(value, StringComparison.OrdinalIgnoreCase));
+    var comparison = evalCase.CaseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+    var required = evalCase.Required.Count(value => output.Contains(value, comparison));
+    var forbidden = evalCase.Forbidden.Count(value => !output.Contains(value, comparison));
     var exact = evalCase.Exact is null ? 0 : string.Equals(output, evalCase.Exact, StringComparison.Ordinal) ? 1 : 0;
     return (required + forbidden + exact, evalCase.Required.Length + evalCase.Forbidden.Length + (evalCase.Exact is null ? 0 : 1));
 }
@@ -271,7 +283,7 @@ static double Median(double[] values) => values.Length switch
 static string Money(decimal? value) => value.HasValue ? $"${value.Value:F8}" : "n/a";
 
 internal sealed record EvalCase(string Name, string Input, string[] Required, string[] Forbidden,
-    InsertionContext? Context = null, string? Exact = null, string[]? Vocabulary = null);
+    InsertionContext? Context = null, string? Exact = null, string[]? Vocabulary = null, bool CaseSensitive = false);
 internal sealed record EvalRun(string Case, string Tier, double LatencyMs, string? Output,
     int InputTokens, int OutputTokens, int ReasoningTokens, decimal? Cost, string? ServedTier,
     string Model, int ChecksPassed, int ChecksTotal, string? Error);
