@@ -165,7 +165,7 @@ function insights(history, now = new Date()) {
 }
 function formatMinutes(minutes) {
   if (minutes < 60) return `${Math.round(minutes)} min`;
-  const hours = Math.floor(minutes / 60); return `${hours} hr ${Math.round(minutes - hours * 60)} min`;
+  const hours = Math.floor(minutes / 60); return `${hours}h ${Math.round(minutes - hours * 60)}m`;
 }
 function renderHome() {
   const hour = new Date().getHours();

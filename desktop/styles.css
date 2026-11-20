@@ -103,7 +103,7 @@ meter { width: 140px; height: 8px; }
 .home-grid { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 28px; align-items: start; }
 .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 30px; }
 .stat { background: var(--card); border-radius: var(--radius); padding: 16px 18px; display: grid; gap: 2px; }
-.stat strong { font: 400 30px/1.15 var(--serif); letter-spacing: -.5px; }
+.stat strong { font: 400 30px/1.15 var(--serif); letter-spacing: -.5px; white-space: nowrap; }
 .stat span { font-size: 12px; color: var(--muted); }
 .section-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .home-side { display: grid; gap: 14px; }

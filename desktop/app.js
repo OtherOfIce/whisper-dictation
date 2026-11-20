@@ -4,6 +4,8 @@ function setEngineOnline(online, starting = false) {
   const status = $('engine-status');
   const needsKey = online && missingKey();
   status.classList.toggle('online', online && !needsKey); status.classList.toggle('offline', !online && !starting);
+  // Only worth showing when something needs attention; a healthy engine is the normal state.
+  status.hidden = online && !needsKey;
   $('engine-label').textContent = needsKey ? `Add your ${credentialNames[needsKey]} key` : online ? 'Ready to dictate' : starting ? 'Starting…' : 'Engine restarting';
   $('engine-banner').hidden = online || starting;
   renderHome();

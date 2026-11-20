@@ -46,6 +46,24 @@ else {
   const historyStore = new HistoryStore(historyPath(), safeStorage, path.join(app.getPath('userData'), 'history.bin'));
   // The main window gets every event; the recording overlay only needs dictation state.
   const OVERLAY_EVENTS = new Set(['state']);
+  // On Windows, a non-focusable transparent window stops receiving clicks once it has been hidden and shown again,
+  // so the toolbar buttons only worked on the first dictation after launch. Each dictation therefore gets a fresh
+  // overlay: when one has been shown and the dictation ends, it is replaced by a new hidden window.
+  let overlayPreferences = null, overlayUsed = false;
+  function createOverlay() {
+    overlay = new BrowserWindow({ width: 192, height: 56, frame: false, transparent: true, resizable: false, focusable: false, skipTaskbar: true, alwaysOnTop: true, show: false, hasShadow: false, webPreferences: overlayPreferences });
+    overlay.setAlwaysOnTop(true, 'screen-saver');
+    overlay.setIgnoreMouseEvents(true);
+    overlayUsed = false;
+    if (testMode) overlay.webContents.on('console-message', event => console.log('renderer:', event.message));
+    return secure(overlay, 'overlay.html');
+  }
+  function retireOverlay() {
+    if (!overlayUsed) { overlay.hide(); return; }
+    const used = overlay;
+    createOverlay().catch(error => log(`overlay: ${error.message}`));
+    used.destroy();
+  }
   const broadcast = value => {
     if (main && !main.isDestroyed()) main.webContents.send('event', value);
     if (OVERLAY_EVENTS.has(value.type) && overlay && !overlay.isDestroyed()) overlay.webContents.send('event', value);
@@ -214,14 +232,15 @@ else {
     if (event.type === 'state') {
       const wasIdle = state.mode === 'Idle'; state = event; lastDictationAt = Date.now();
       const overlayInteractive = event.mode === 'LockMode';
-      overlay.setIgnoreMouseEvents(!overlayInteractive);
-      if (event.mode === 'Idle') overlay.hide();
+      if (event.mode === 'Idle') retireOverlay();
       else {
+        overlay.setIgnoreMouseEvents(!overlayInteractive);
         if (wasIdle) {
           const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
           overlay.setPosition(Math.round(area.x + (area.width - 192) / 2), area.y + area.height - 64);
         }
         if (!overlay.isVisible()) {
+          overlayUsed = true;
           overlay.showInactive();
           overlay.setAlwaysOnTop(true, 'screen-saver');
           overlay.moveTop();
@@ -309,7 +328,7 @@ else {
     child.on('error', error => { log(`start failed: ${error.message}`); });
     child.on('exit', code => {
       if (engine !== child) return;
-      overlay.hide(); state = { mode: 'Idle' }; broadcast({ type: 'engineOffline' });
+      retireOverlay(); state = { mode: 'Idle' }; broadcast({ type: 'engineOffline' });
       for (const request of pending.values()) { clearTimeout(request.timeout); request.reject(new Error('Dictation engine stopped.')); }
       pending.clear();
       if (quitting) return;
@@ -614,13 +633,11 @@ else {
     main.on('blur', stopSettingsTools);
     main.on('hide', stopSettingsTools);
     main.webContents.on('render-process-gone', stopSettingsTools);
-    overlay = new BrowserWindow({ width: 192, height: 56, frame: false, transparent: true, resizable: false, focusable: false, skipTaskbar: true, alwaysOnTop: true, show: false, hasShadow: false, webPreferences });
-    overlay.setAlwaysOnTop(true, 'screen-saver');
-    overlay.setIgnoreMouseEvents(true);
+    overlayPreferences = webPreferences;
     learning = new BrowserWindow({ width: 360, height: 110, frame: false, transparent: true, resizable: false, focusable: false, skipTaskbar: true, alwaysOnTop: true, show: false, hasShadow: false, webPreferences });
     learning.setAlwaysOnTop(true, 'screen-saver');
-    if (testMode) for (const win of [main, overlay]) win.webContents.on('console-message', event => console.log('renderer:', event.message));
-    await Promise.all([secure(main, 'index.html'), secure(overlay, 'overlay.html'), secure(learning, 'learning-toast.html')]);
+    if (testMode) main.webContents.on('console-message', event => console.log('renderer:', event.message));
+    await Promise.all([secure(main, 'index.html'), createOverlay(), secure(learning, 'learning-toast.html')]);
     if (!testMode) {
       const icon = nativeImage.createFromPath(path.join(__dirname, 'assets', 'tray.png'));
       tray = new Tray(icon); tray.setToolTip('Local Whisper');
@@ -638,6 +655,6 @@ else {
       main.on('focus', () => { if (state.mode === 'Idle' && Date.now() - lastFocusSync > 30000) { lastFocusSync = Date.now(); syncAccount().catch(() => {}); } });
     }
     if (!startHidden) main.show();
-    if (testMode) await require('./tests/ui-smoke.cjs').run({ main, overlay, learning, app, engineEvent, testOverlayActions, updater });
+    if (testMode) await require('./tests/ui-smoke.cjs').run({ main, overlay: () => overlay, learning, app, engineEvent, testOverlayActions, updater });
   }).catch(error => { if (testMode) console.error(error); app.exit(1); });
 }

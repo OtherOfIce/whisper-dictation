@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { clipboard } = require('electron');
 
 // Drives the real windows with demo fixtures; no engine and no network. Screenshots go to desktop/artifacts.
-exports.run = async ({ main, overlay, learning, app, engineEvent, testOverlayActions, updater }) => {
+exports.run = async ({ main, overlay: currentOverlay, learning, app, engineEvent, testOverlayActions, updater }) => {
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const evaluate = code => main.webContents.executeJavaScript(code);
   const text = id => evaluate(`document.getElementById(${JSON.stringify(id)}).textContent`);
@@ -200,6 +200,7 @@ exports.run = async ({ main, overlay, learning, app, engineEvent, testOverlayAct
   await shot('home-setup');
 
   // Recording overlay: text-free, not focusable, lock-mode buttons work.
+  let overlay = currentOverlay();
   assert(!overlay.isVisible());
   engineEvent({ type: 'state', mode: 'PushToTalk', level: .18 }); await wait(200);
   assert(overlay.isVisible());
@@ -216,7 +217,19 @@ exports.run = async ({ main, overlay, learning, app, engineEvent, testOverlayAct
   await wait(50);
   assert.deepEqual(testOverlayActions, ['finish']);
   await shot('overlay', overlay);
-  engineEvent({ type: 'state', mode: 'Idle', level: 0 }); assert(!overlay.isVisible());
+  const usedOverlay = overlay;
+  engineEvent({ type: 'state', mode: 'Idle', level: 0 }); assert(usedOverlay.isDestroyed());
+  // A shown overlay is replaced after each dictation, because Windows stops sending clicks to one shown twice.
+  overlay = currentOverlay(); await wait(300);
+  assert(overlay !== usedOverlay && !overlay.isVisible() && overlay.isFocusable() === false);
+  engineEvent({ type: 'state', mode: 'LockMode', level: .18 }); await wait(200);
+  assert(overlay.isVisible());
+  const cancelPoint = await overlay.webContents.executeJavaScript('(() => { const r = document.getElementById("cancel").getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()');
+  overlay.webContents.sendInputEvent({ type: 'mouseDown', ...cancelPoint, button: 'left', clickCount: 1 });
+  overlay.webContents.sendInputEvent({ type: 'mouseUp', ...cancelPoint, button: 'left', clickCount: 1 });
+  await wait(50);
+  assert.deepEqual(testOverlayActions, ['finish', 'cancel']);
+  engineEvent({ type: 'state', mode: 'Idle', level: 0 }); assert(overlay.isDestroyed() && !currentOverlay().isVisible());
 
   // Narrow window still lays out.
   main.setSize(900, 640); await wait(300);
